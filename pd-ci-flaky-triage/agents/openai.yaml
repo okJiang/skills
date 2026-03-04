@@ -1,0 +1,4 @@
+interface:
+  display_name: "PD CI Flaky Triage"
+  short_description: "Triage recent PD CI flaky failures"
+  default_prompt: "Use $pd-ci-flaky-triage to scan recent failed PD tests and update flaky issues."

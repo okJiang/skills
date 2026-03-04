@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review PR (Root Cause)"
+  short_description: "Review PR against issue root cause and quality risks"
+  default_prompt: "Use $review-pr to analyze the linked issue root cause, validate whether the PR truly fixes it, and draft comments for my approval before posting."
