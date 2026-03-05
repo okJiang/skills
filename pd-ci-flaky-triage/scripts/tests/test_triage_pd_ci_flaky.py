@@ -24,7 +24,7 @@ class TriageParserTests(unittest.TestCase):
         self.assertNotIn("GOLEAK", signatures)
         self.assertEqual(["UNKNOWN_FAILURE"], signatures)
 
-    def test_parse_test_names_covers_running_tests_and_deadlock_stack(self) -> None:
+    def test_parse_test_names_prioritizes_explicit_markers_over_stack_noise(self) -> None:
         log_text = """
 panic: test timed out after 5m0s
     running tests:
@@ -33,7 +33,14 @@ server_test.go:86 server_test.TestUpdateAdvertiseUrls { err = cluster.RunInitial
 """
         tests = MODULE.parse_test_names(log_text)
         self.assertIn("TestConfigTTLAfterTransferLeader", tests)
-        self.assertIn("TestUpdateAdvertiseUrls", tests)
+        self.assertNotIn("TestUpdateAdvertiseUrls", tests)
+
+    def test_parse_test_names_falls_back_to_stack_when_explicit_markers_missing(self) -> None:
+        log_text = """
+server_test.go:86 server_test.TestUpdateAdvertiseUrls { err = cluster.RunInitialServers() }
+"""
+        tests = MODULE.parse_test_names(log_text)
+        self.assertEqual(["TestUpdateAdvertiseUrls"], tests)
 
     def test_extract_stack_blocks_data_race_preserves_context(self) -> None:
         log_text = """
@@ -65,6 +72,36 @@ Previous write at 0x00c0016f8bb8 by goroutine 1387:
             stack_tokens=[],
         )
         self.assertEqual(0, score)
+
+    def test_score_issue_match_requires_test_token_when_test_name_is_known(self) -> None:
+        issue = {
+            "title": "Data race in scheduler",
+            "body": "panic and data race observed at scheduler.go:42",
+            "updatedAt": "2026-03-01T00:00:00Z",
+        }
+        score = MODULE.score_issue_match(
+            issue,
+            test_name="TestConfigTTLAfterTransferLeader",
+            signatures=["DATA_RACE"],
+            stack_tokens=["scheduler.go"],
+        )
+        self.assertEqual(0, score)
+
+    def test_normalize_extracted_tests_prefers_specific_and_collapses_param_subtests(self) -> None:
+        tests = [
+            "TestQPS/concurrency=1000,reserveN=10,limit=400000",
+            "TestQPS",
+            "TestTSOKeyspaceGroupManagerSuite",
+            "TestTSOKeyspaceGroupManagerSuite/TestWatchFailed",
+        ]
+        normalized = MODULE.normalize_extracted_tests(tests)
+        self.assertEqual(["TestQPS", "TestTSOKeyspaceGroupManagerSuite/TestWatchFailed"], normalized)
+
+    def test_build_refs_match_repo_filters_non_target_repo(self) -> None:
+        build = {"Refs": {"org": "pingcap", "repo": "ticdc", "pulls": [{"number": 4263}]}}
+        self.assertFalse(MODULE.build_refs_match_repo(build, "tikv/pd"))
+        build = {"Refs": {"org": "tikv", "repo": "pd", "pulls": [{"number": 10254}]}}
+        self.assertTrue(MODULE.build_refs_match_repo(build, "tikv/pd"))
 
     def test_parse_failures_from_log_agent_mode_extracts_full_block(self) -> None:
         log_text = """
@@ -155,6 +192,36 @@ testing.(*T).Run(0xc0002f1c00, {0x64f33ab, 0x20}, 0x6e29400)
         ]:
             self.assertNotIn(marker, reason_section)
             self.assertIn(marker, anything_else_section)
+
+    def test_parse_failures_from_log_uses_package_key_for_goleak(self) -> None:
+        log_text = """
+goleak: Errors on successful test run: found unexpected goroutines:
+FAIL\tgithub.com/tikv/pd/client\t8.624s
+"""
+        record = MODULE.FailureRecord(
+            record_id="sample-3",
+            source="prow",
+            ci_name="pull-unit-test-next-gen-3",
+            ci_url="https://example.invalid/ci",
+            log_url="https://example.invalid/log",
+            occurred_at="2026-03-03T00:00:00Z",
+            pr_number=1,
+            commit_sha="abc",
+            run_id="1",
+            job_id=None,
+            status="FAILURE",
+        )
+        parsed = MODULE.parse_failures_from_log(
+            record=record,
+            log_text=log_text,
+            raw_log_ref="/tmp/sample.log",
+            analysis_mode="agent-full",
+            agent_max_log_bytes=1024 * 1024,
+            confidence_threshold=0.65,
+        )
+        self.assertTrue(parsed)
+        self.assertEqual("github.com/tikv/pd/client", parsed[0].primary_package)
+        self.assertEqual("package::githubcomtikvpdclient", parsed[0].key)
 
 
 if __name__ == "__main__":

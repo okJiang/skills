@@ -58,6 +58,8 @@ class ParsedFailure:
     confidence: float = 0.0
     needs_inbox_fallback: bool = False
     stack_tokens: list[str] = dataclasses.field(default_factory=list)
+    primary_package: str | None = None
+    failed_packages: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -87,6 +89,7 @@ class AgentAnalysisRecord:
     confidence: float
     needs_inbox_fallback: bool
     stack_tokens: list[str]
+    primary_package: str | None
 
 
 @dataclasses.dataclass
@@ -315,6 +318,79 @@ def normalize_test_key(test_name: str | None, signatures: list[str]) -> str:
     return "signature::unknown"
 
 
+def normalize_package_key(package_name: str) -> str:
+    cleaned = package_name.strip().strip("`")
+    if not cleaned:
+        return "package::unknown"
+    return f"package::{re.sub(r'[^a-z0-9]+', '', cleaned.lower())}"
+
+
+def collapse_parameterized_subtest(test_name: str) -> str:
+    if "/" not in test_name:
+        return test_name
+    root, suffix = test_name.split("/", 1)
+    if re.search(r"[=,]", suffix):
+        return root
+    return test_name
+
+
+def normalize_extracted_tests(tests: list[str]) -> list[str]:
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for test_name in tests:
+        normalized = collapse_parameterized_subtest(test_name)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+
+    roots_with_subtests = {name.split("/", 1)[0] for name in deduped if "/" in name}
+    return [name for name in deduped if not ("/" not in name and name in roots_with_subtests)]
+
+
+FAIL_PACKAGE_PATTERN = re.compile(r"^\s*FAIL\s+([^\s]+)\s+\d+(?:\.\d+)?s(?:\s|$)")
+
+
+def parse_failed_packages(log_text: str) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for line in log_text.splitlines():
+        match = FAIL_PACKAGE_PATTERN.search(line)
+        if not match:
+            continue
+        package_name = match.group(1).strip()
+        if not package_name or package_name in seen:
+            continue
+        seen.add(package_name)
+        found.append(package_name)
+    return found
+
+
+def build_refs_match_repo(build: dict[str, Any], target_repo: str) -> bool:
+    if "/" not in target_repo:
+        return True
+    target_org, target_name = target_repo.split("/", 1)
+    target_org = target_org.lower().strip()
+    target_name = target_name.lower().strip()
+
+    refs = build.get("Refs", {}) or {}
+    org = str(refs.get("org") or "").lower().strip()
+    repo = str(refs.get("repo") or "").lower().strip()
+    if org and repo:
+        return org == target_org and repo == target_name
+
+    pulls = refs.get("pulls", []) or []
+    for pull in pulls:
+        pull_org = str(pull.get("org") or pull.get("author") or "").lower().strip()
+        pull_repo = str(pull.get("repo") or "").lower().strip()
+        if pull_org and pull_repo:
+            if pull_org == target_org and pull_repo == target_name:
+                return True
+
+    spyglass_link = str(build.get("SpyglassLink") or "").lower()
+    return f"/pull/{target_org}_{target_name}/" in spyglass_link
+
+
 def looks_test_related(name: str) -> bool:
     lowered = name.lower()
     return bool(
@@ -331,6 +407,10 @@ SIGNATURE_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 GOLEAK_PATTERN = re.compile(r"\bgoleak\b", re.IGNORECASE)
 GOLEAK_EXCLUDE_PATTERN = re.compile(r"^\s*go:\s+downloading\s+.*goleak", re.IGNORECASE)
+GOLEAK_SIGNAL_PATTERNS = [
+    re.compile(r"found unexpected goroutines", re.IGNORECASE),
+    re.compile(r"goleak:\s+errors on successful test run", re.IGNORECASE),
+]
 COMMON_STOP_PATTERNS = [
     re.compile(r"^\s*run all tasks takes", re.IGNORECASE),
     re.compile(r"^\s*make:\s+\*\*\*"),
@@ -352,7 +432,7 @@ def parse_signatures(log_text: str) -> list[str]:
     for line in lines:
         if GOLEAK_EXCLUDE_PATTERN.search(line):
             continue
-        if GOLEAK_PATTERN.search(line):
+        if any(pattern.search(line) for pattern in GOLEAK_SIGNAL_PATTERNS):
             has_real_goleak = True
             break
     if has_real_goleak:
@@ -384,28 +464,32 @@ def parse_test_names(log_text: str) -> list[str]:
         re.compile(r"\bTest:\s+([^\s]+)"),
         re.compile(r"running tests:\s*$", re.IGNORECASE),
     ]
-    running_test_pattern = re.compile(r"\b(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)?)\b")
+    running_test_pattern = re.compile(r"^\s*(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)?)(?:\s|\(|$)")
     stack_test_pattern = re.compile(r"\b[\w_]+\.(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)?)\b")
-    found: list[str] = []
-    seen: set[str] = set()
+    explicit_found: list[str] = []
+    explicit_seen: set[str] = set()
+    stack_found: list[str] = []
+    stack_seen: set[str] = set()
     lines = log_text.splitlines()
     for i, line in enumerate(lines):
         for pattern in patterns[:3]:
             match = pattern.search(line)
             if match:
-                _push_test_name(found, seen, match.group(1))
+                _push_test_name(explicit_found, explicit_seen, match.group(1))
 
         if patterns[3].search(line):
             for j in range(i + 1, min(i + 8, len(lines))):
                 run_match = running_test_pattern.search(lines[j])
                 if run_match:
-                    _push_test_name(found, seen, run_match.group(1))
+                    _push_test_name(explicit_found, explicit_seen, run_match.group(1))
 
         stack_match = stack_test_pattern.search(line)
         if stack_match:
-            _push_test_name(found, seen, stack_match.group(1))
+            _push_test_name(stack_found, stack_seen, stack_match.group(1))
 
-    return found
+    if explicit_found:
+        return normalize_extracted_tests(explicit_found)
+    return normalize_extracted_tests(stack_found)
 
 
 def extract_anchor_offsets(log_text: str) -> list[int]:
@@ -568,10 +652,14 @@ def extract_evidence(log_text: str, stack_blocks: list[str], max_lines: int = 30
 def build_evidence_summary(
     failure_type: str,
     primary_test: str | None,
+    primary_package: str | None,
     signatures: list[str],
     evidence_lines: list[str],
 ) -> str:
-    prefix = f"type={failure_type}; test={primary_test or 'N/A'}; signatures={','.join(signatures)}"
+    prefix = f"type={failure_type}; test={primary_test or 'N/A'}"
+    if primary_package:
+        prefix += f"; package={primary_package}"
+    prefix += f"; signatures={','.join(signatures)}"
     if not evidence_lines:
         return prefix
     return f"{prefix}; first_line={evidence_lines[0][:300]}"
@@ -591,24 +679,20 @@ def parse_failures_from_log(
     signatures = parse_signatures(log_text)
     tests = parse_test_names(log_text)
     primary_test = tests[0] if tests else None
+    failed_packages = parse_failed_packages(log_text)
+    primary_package = failed_packages[0] if failed_packages else None
     anchor_offsets = extract_anchor_offsets(log_text)
     stack_blocks = extract_stack_blocks(log_text, signatures) if analysis_mode == "agent-full" else []
     stack_tokens = extract_stack_tokens(stack_blocks) if analysis_mode == "agent-full" else []
     failure_type = infer_failure_type(signatures)
     evidence = extract_evidence(log_text, stack_blocks=stack_blocks)
-    evidence_summary = build_evidence_summary(
-        failure_type=failure_type,
-        primary_test=primary_test,
-        signatures=signatures,
-        evidence_lines=evidence,
-    )
     confidence = (
         estimate_confidence(primary_test=primary_test, signatures=signatures, stack_blocks=stack_blocks, stack_tokens=stack_tokens)
         if analysis_mode == "agent-full"
         else 0.0
     )
     needs_inbox_fallback = analysis_mode == "agent-full" and (
-        primary_test is None or confidence < confidence_threshold
+        (primary_test is None and primary_package is None) or confidence < confidence_threshold
     )
 
     common_kwargs = {
@@ -621,29 +705,63 @@ def parse_failures_from_log(
         "raw_log_ref": raw_log_ref,
         "tests": tests,
         "primary_test": primary_test,
+        "primary_package": primary_package,
+        "failed_packages": failed_packages,
         "failure_type": failure_type,
         "stack_blocks": stack_blocks,
-        "evidence_summary": evidence_summary,
         "confidence": confidence,
         "needs_inbox_fallback": needs_inbox_fallback,
         "stack_tokens": stack_tokens,
     }
 
+    if "GOLEAK" in signatures and primary_package:
+        evidence_summary = build_evidence_summary(
+            failure_type=failure_type,
+            primary_test=None,
+            primary_package=primary_package,
+            signatures=signatures,
+            evidence_lines=evidence,
+        )
+        return [
+            ParsedFailure(
+                key=normalize_package_key(primary_package),
+                test_name=None,
+                evidence_summary=evidence_summary,
+                **common_kwargs,
+            )
+        ]
+
     if not tests:
+        evidence_summary = build_evidence_summary(
+            failure_type=failure_type,
+            primary_test=primary_test,
+            primary_package=primary_package,
+            signatures=signatures,
+            evidence_lines=evidence,
+        )
         return [
             ParsedFailure(
                 key=normalize_test_key(None, signatures),
                 test_name=None,
+                evidence_summary=evidence_summary,
                 **common_kwargs,
             )
         ]
 
     parsed: list[ParsedFailure] = []
     for test_name in tests:
+        evidence_summary = build_evidence_summary(
+            failure_type=failure_type,
+            primary_test=test_name,
+            primary_package=primary_package,
+            signatures=signatures,
+            evidence_lines=evidence,
+        )
         parsed.append(
             ParsedFailure(
                 key=normalize_test_key(test_name, signatures),
                 test_name=test_name,
+                evidence_summary=evidence_summary,
                 **common_kwargs,
             )
         )
@@ -732,6 +850,9 @@ def collect_prow_failures(
                 if started >= since:
                     all_older = False
                 else:
+                    continue
+
+                if not build_refs_match_repo(build, repo):
                     continue
 
                 result = str(build.get("Result", "")).upper()
@@ -1202,6 +1323,7 @@ def build_agent_analyses(parsed: list[ParsedFailure]) -> list[AgentAnalysisRecor
             confidence=item.confidence,
             needs_inbox_fallback=item.needs_inbox_fallback,
             stack_tokens=item.stack_tokens,
+            primary_package=item.primary_package,
         )
     return sorted(analysis_by_record.values(), key=lambda x: x.record_id)
 
@@ -1256,23 +1378,40 @@ def score_issue_match(
     test_name: str | None,
     signatures: list[str],
     stack_tokens: list[str],
+    package_name: str | None = None,
 ) -> int:
     title = normalize_issue_text(issue.get("title") or "")
     body = normalize_issue_text(issue.get("body") or "")
     issue_text = f"{title}\n{body}"
     score = 0
+    has_test_token_match = False
+    has_package_match = False
 
     if test_name:
         normalized = normalize_test_name_for_match(test_name)
         leaf = normalized.split("/")[-1]
         if normalized and normalized in title:
             score = max(score, 130)
+            has_test_token_match = True
         if normalized and normalized in body:
             score = max(score, 120)
+            has_test_token_match = True
         if leaf and leaf in title:
             score = max(score, 100)
+            has_test_token_match = True
         if leaf and leaf in body:
             score = max(score, 90)
+            has_test_token_match = True
+
+    if package_name:
+        normalized_pkg = normalize_test_name_for_match(package_name)
+        pkg_leaf = normalized_pkg.split("/")[-1]
+        if normalized_pkg and normalized_pkg in issue_text:
+            score = max(score, 125)
+            has_package_match = True
+        elif pkg_leaf and pkg_leaf in issue_text:
+            score = max(score, 95)
+            has_package_match = True
 
     sig_to_phrase = {
         "DATA_RACE": "data race",
@@ -1303,9 +1442,16 @@ def score_issue_match(
         has_non_unknown_signature = any(sig != "UNKNOWN_FAILURE" for sig in signatures)
         if not has_non_unknown_signature and stack_overlap == 0:
             return 0
+    elif not has_test_token_match:
+        # A known test must match title/body token to avoid false issue linking.
+        return 0
 
     if "flaky" in issue_text and score < 60 and not test_name:
         # Avoid matching broad "flaky" issue text when test identity is unclear.
+        return 0
+
+    if package_name and not has_package_match and not test_name and score < 100:
+        # Package-level matching should not rely on generic flaky wording or weak stack overlap.
         return 0
 
     return score
@@ -1316,6 +1462,7 @@ def choose_issue_match(
     test_name: str | None,
     signatures: list[str],
     stack_tokens: list[str],
+    package_name: str | None = None,
 ) -> dict[str, Any] | None:
     best: dict[str, Any] | None = None
     best_score = -1
@@ -1325,6 +1472,7 @@ def choose_issue_match(
         score = score_issue_match(
             issue,
             test_name=test_name,
+            package_name=package_name,
             signatures=signatures,
             stack_tokens=stack_tokens,
         )
@@ -1336,7 +1484,7 @@ def choose_issue_match(
             best_updated = updated
             best = issue
 
-    threshold = 100 if test_name else 75
+    threshold = 100 if test_name else 90 if package_name else 75
     if best is None or best_score < threshold:
         return None
     return best
@@ -1451,8 +1599,9 @@ def issue_comment_body(
     signatures: list[str],
     repo: str,
     evidence_summary: str,
+    package_name: str | None = None,
 ) -> str:
-    test_display = decision.test_name or decision.key
+    test_display = decision.test_name or (f"{package_name} package" if package_name else decision.key)
     sig_display = ", ".join(signatures)
     intro = (
         f"Observed flaky failure again for `{test_display}`."
@@ -1478,9 +1627,13 @@ def issue_comment_body(
     return "\n".join(lines)
 
 
-def build_issue_title(test_name: str | None, signatures: list[str]) -> str:
+def build_issue_title(test_name: str | None, signatures: list[str], package_name: str | None = None) -> str:
+    if package_name and "GOLEAK" in signatures:
+        return f"GOLEAK detected in {package_name} package tests"
     if test_name:
         return f"{test_name} is flaky"
+    if package_name:
+        return f"{package_name} package tests are flaky"
     if signatures:
         return f"{signatures[0].replace('_', ' ').title()} in CI is flaky"
     return "Unknown test is flaky"
@@ -1495,6 +1648,7 @@ def build_issue_body(
     records: list[FailureRecord],
     evidence_summary: str,
     stack_blocks: list[str],
+    package_name: str | None = None,
 ) -> str:
     jobs_block = "\n".join([f"- {name}" for name in ci_names])
     links_block = "\n".join(links)
@@ -1510,13 +1664,16 @@ def build_issue_body(
         f"Evidence summary: {evidence_summary}",
     ]
 
+    target_key = test_name or (f"package:{package_name}" if package_name else decision.key)
     anything_else = [
-        f"Test key: {test_name or decision.key}",
+        f"Test key: {target_key}",
         f"PRs: {prs if prs else 'N/A'}",
         f"SHAs: {shas if shas else 'N/A'}",
         "Source: auto triage from Prow + GitHub Actions",
         *triage_meta_lines,
     ]
+    if package_name:
+        anything_else.insert(1, f"Fail package: {package_name}")
 
     stack_excerpt = "\n\n".join(stack_blocks[:2]) if stack_blocks else "N/A"
 
@@ -1640,6 +1797,7 @@ def process_issues(
         signatures = signatures_by_key.get(key, ["UNKNOWN_FAILURE"])
         evidence_summary = entries[0].evidence_summary if entries else ""
         stack_blocks = entries[0].stack_blocks if entries else []
+        package_name = entries[0].primary_package if entries else None
         labels = parse_label_list(args.inbox_issue_labels)
 
         issue = issue_matches.get(key)
@@ -1713,6 +1871,7 @@ def process_issues(
                 signatures=signatures,
                 repo=args.repo,
                 evidence_summary=evidence_summary,
+                package_name=package_name,
             )
 
             if issue_number is None:
@@ -1770,7 +1929,7 @@ def process_issues(
             )
             continue
 
-        title = build_issue_title(test_name=decision.test_name, signatures=signatures)
+        title = build_issue_title(test_name=decision.test_name, signatures=signatures, package_name=package_name)
         body = build_issue_body(
             test_name=decision.test_name,
             ci_names=ci_names,
@@ -1780,6 +1939,7 @@ def process_issues(
             records=records,
             evidence_summary=evidence_summary,
             stack_blocks=stack_blocks,
+            package_name=package_name,
         )
 
         issue_url = None
@@ -1947,17 +2107,20 @@ def main() -> int:
 
     for key, entries in grouped.items():
         test_name = entries[0].test_name
+        package_name = entries[0].primary_package
         signatures = signatures_by_key.get(key, [])
         stack_tokens = stack_tokens_by_key.get(key, [])
         open_match = choose_issue_match(
             open_issues,
             test_name=test_name,
+            package_name=package_name,
             signatures=signatures,
             stack_tokens=stack_tokens,
         )
         closed_match = None if open_match else choose_issue_match(
             closed_issues,
             test_name=test_name,
+            package_name=package_name,
             signatures=signatures,
             stack_tokens=stack_tokens,
         )
