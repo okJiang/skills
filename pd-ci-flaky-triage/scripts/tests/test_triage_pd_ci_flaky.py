@@ -4,9 +4,13 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import pathlib
+import re
 import sys
 import unittest
+from contextlib import redirect_stderr
+from unittest import mock
 
 
 SCRIPT_PATH = pathlib.Path(__file__).resolve().parents[1] / "triage_pd_ci_flaky.py"
@@ -15,6 +19,24 @@ MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+SOURCE_TEXT = SCRIPT_PATH.read_text(encoding="utf-8")
+
+
+def make_record(record_id: str = "sample") -> object:
+    return MODULE.FailureRecord(
+        record_id=record_id,
+        source="prow",
+        ci_name="pull-unit-test-next-gen-3",
+        ci_url="https://example.invalid/ci",
+        log_url="https://example.invalid/log",
+        occurred_at="2026-03-03T00:00:00Z",
+        pr_number=1,
+        commit_sha="abc",
+        run_id="1",
+        job_id=None,
+        status="FAILURE",
+    )
 
 
 class TriageParserTests(unittest.TestCase):
@@ -42,22 +64,17 @@ server_test.go:86 server_test.TestUpdateAdvertiseUrls { err = cluster.RunInitial
         tests = MODULE.parse_test_names(log_text)
         self.assertEqual(["TestUpdateAdvertiseUrls"], tests)
 
-    def test_extract_stack_blocks_data_race_preserves_context(self) -> None:
+    def test_extract_evidence_collects_anchor_lines(self) -> None:
         log_text = """
-==================
-WARNING: DATA RACE
-Read at 0x00c0016f8bb8 by goroutine 937:
-  github.com/tikv/pd/pkg/mcs/resourcemanager/server.(*keyspaceResourceGroupManager).getServiceLimit()
-      /home/prow/go/src/github.com/tikv/pd/pkg/mcs/resourcemanager/server/keyspace_manager.go:284 +0x18d
-Previous write at 0x00c0016f8bb8 by goroutine 1387:
-  github.com/tikv/pd/pkg/mcs/resourcemanager/server.(*serviceLimiter).setServiceLimit()
-      /home/prow/go/src/github.com/tikv/pd/pkg/mcs/resourcemanager/server/service_limit.go:69 +0x205
-==================
+[2026-03-03T00:00:00Z] INFO bootstrap done
+--- FAIL: TestFoo (10.00s)
+panic: test timed out after 5m0s
+Condition never satisfied
 """
-        blocks = MODULE.extract_stack_blocks(log_text, signatures=["DATA_RACE"])
-        self.assertTrue(blocks)
-        self.assertIn("Previous write", blocks[0])
-        self.assertIn("keyspace_manager.go:284", blocks[0])
+        evidence = MODULE.extract_evidence(log_text)
+        self.assertGreaterEqual(len(evidence), 2)
+        self.assertTrue(any("--- FAIL:" in line for line in evidence))
+        self.assertTrue(any("panic:" in line.lower() for line in evidence))
 
     def test_score_issue_match_blocks_generic_unknown_flaky_match(self) -> None:
         issue = {
@@ -69,7 +86,7 @@ Previous write at 0x00c0016f8bb8 by goroutine 1387:
             issue,
             test_name=None,
             signatures=["UNKNOWN_FAILURE"],
-            stack_tokens=[],
+            package_name=None,
         )
         self.assertEqual(0, score)
 
@@ -83,7 +100,7 @@ Previous write at 0x00c0016f8bb8 by goroutine 1387:
             issue,
             test_name="TestConfigTTLAfterTransferLeader",
             signatures=["DATA_RACE"],
-            stack_tokens=["scheduler.go"],
+            package_name=None,
         )
         self.assertEqual(0, score)
 
@@ -103,125 +120,91 @@ Previous write at 0x00c0016f8bb8 by goroutine 1387:
         build = {"Refs": {"org": "tikv", "repo": "pd", "pulls": [{"number": 10254}]}}
         self.assertTrue(MODULE.build_refs_match_repo(build, "tikv/pd"))
 
-    def test_parse_failures_from_log_agent_mode_extracts_full_block(self) -> None:
+    def test_parse_failures_from_log_extracts_test_and_confidence(self) -> None:
         log_text = """
 panic: test timed out after 5m0s
     running tests:
         TestConfigTTLAfterTransferLeader (5m0s)
-
-goroutine 1 [chan receive, 5 minutes]:
-testing.(*T).Run(0xc0002f1c00, {0x64f33ab, 0x20}, 0x6e29400)
-    /usr/local/go/src/testing/testing.go:2005 +0x9fe
 """
-        record = MODULE.FailureRecord(
-            record_id="sample-1",
-            source="prow",
-            ci_name="pull-unit-test-next-gen-3",
-            ci_url="https://example.invalid/ci",
-            log_url="https://example.invalid/log",
-            occurred_at="2026-03-03T00:00:00Z",
-            pr_number=1,
-            commit_sha="abc",
-            run_id="1",
-            job_id=None,
-            status="FAILURE",
-        )
         parsed = MODULE.parse_failures_from_log(
-            record=record,
+            record=make_record("sample-1"),
             log_text=log_text,
-            raw_log_ref="/tmp/sample.log",
-            analysis_mode="agent-full",
             agent_max_log_bytes=1024 * 1024,
-            confidence_threshold=0.65,
         )
         self.assertTrue(parsed)
         self.assertEqual("TestConfigTTLAfterTransferLeader", parsed[0].primary_test)
         self.assertGreater(parsed[0].confidence, 0.65)
-        self.assertTrue(parsed[0].stack_blocks)
-
-    def test_build_issue_body_moves_triage_metadata_to_anything_else(self) -> None:
-        decision = MODULE.FlakyDecision(
-            key="testfoo",
-            test_name="TestFoo",
-            is_flaky=True,
-            reason="reproduced_across_prs",
-            distinct_pr_count=3,
-            distinct_sha_count=4,
-            has_existing_issue=False,
-            existing_issue_number=None,
-            confidence=0.95,
-        )
-        record = MODULE.FailureRecord(
-            record_id="sample-2",
-            source="actions",
-            ci_name="PD Test",
-            ci_url="https://example.invalid/ci",
-            log_url="https://example.invalid/log",
-            occurred_at="2026-03-03T00:00:00Z",
-            pr_number=10200,
-            commit_sha="abc123",
-            run_id="1",
-            job_id=1,
-            status="FAILURE",
-        )
-        body = MODULE.build_issue_body(
-            test_name="TestFoo",
-            ci_names=["PD Test"],
-            links=["https://example.invalid/ci"],
-            decision=decision,
-            signatures=["DATA_RACE"],
-            records=[record],
-            evidence_summary="timeout in TestFoo",
-            stack_blocks=["stack line 1\nstack line 2"],
-        )
-
-        reason_section = body.split("### Reason for failure (if possible)\n", 1)[1].split(
-            "\n### Stack excerpt",
-            1,
-        )[0]
-        anything_else_section = body.split("### Anything else\n", 1)[1]
-
-        self.assertEqual("", reason_section.strip())
-        for marker in [
-            "Auto-triage basis:",
-            "Signatures:",
-            "Distinct PR count in window:",
-            "Distinct commit count in window:",
-            "Confidence:",
-            "Evidence summary:",
-        ]:
-            self.assertNotIn(marker, reason_section)
-            self.assertIn(marker, anything_else_section)
 
     def test_parse_failures_from_log_uses_package_key_for_goleak(self) -> None:
         log_text = """
 goleak: Errors on successful test run: found unexpected goroutines:
 FAIL\tgithub.com/tikv/pd/client\t8.624s
 """
-        record = MODULE.FailureRecord(
-            record_id="sample-3",
-            source="prow",
-            ci_name="pull-unit-test-next-gen-3",
-            ci_url="https://example.invalid/ci",
-            log_url="https://example.invalid/log",
-            occurred_at="2026-03-03T00:00:00Z",
-            pr_number=1,
-            commit_sha="abc",
-            run_id="1",
-            job_id=None,
-            status="FAILURE",
-        )
         parsed = MODULE.parse_failures_from_log(
-            record=record,
+            record=make_record("sample-2"),
             log_text=log_text,
-            raw_log_ref="/tmp/sample.log",
-            analysis_mode="agent-full",
             agent_max_log_bytes=1024 * 1024,
-            confidence_threshold=0.65,
         )
         self.assertTrue(parsed)
         self.assertEqual("github.com/tikv/pd/client", parsed[0].primary_package)
         self.assertEqual("package::githubcomtikvpdclient", parsed[0].key)
+        self.assertIsNone(parsed[0].test_name)
+
+    def test_to_action_payload_schema_excludes_generated_body_fields(self) -> None:
+        summary = MODULE.RunSummary(
+            scanned_window_start="2026-03-04T00:00:00+00:00",
+            scanned_window_end="2026-03-05T00:00:00+00:00",
+            prow_records=3,
+            actions_records=2,
+            parsed_failures=4,
+            flaky_true=2,
+        )
+        create = MODULE.CreateAction(
+            key="testfoo",
+            test_name="TestFoo",
+            package_name=None,
+            title="TestFoo is flaky",
+            labels=["type/ci"],
+            links=["https://example.invalid/ci/1"],
+            ci_names=["pull-unit-test-next-gen-3"],
+            signatures=["PANIC"],
+            evidence_summary="type=panic; test=TestFoo",
+        )
+        comment = MODULE.CommentAction(
+            key="testbar",
+            test_name="TestBar",
+            package_name=None,
+            issue_number=101,
+            issue_url="https://github.com/tikv/pd/issues/101",
+            new_links=["https://example.invalid/ci/2"],
+            ci_names=["PD Test"],
+            signatures=["DATA_RACE"],
+            evidence_summary="type=data_race; test=TestBar",
+        )
+        payload = MODULE.to_action_payload(
+            summary=summary,
+            create_actions=[create],
+            comment_actions=[comment],
+            reopen_actions=[comment],
+        )
+
+        self.assertEqual({"window", "counts", "create", "comment", "reopen_and_comment"}, set(payload.keys()))
+        self.assertEqual(1, payload["counts"]["create"])
+        self.assertEqual(1, payload["counts"]["comment"])
+        self.assertEqual(1, payload["counts"]["reopen_and_comment"])
+        self.assertNotIn("body", payload["create"][0])
+        self.assertNotIn("comment_body", payload["comment"][0])
+
+    def test_script_has_no_gh_write_issue_ops(self) -> None:
+        self.assertIsNone(re.search(r"['\"]issue['\"]\s*,\s*['\"]create['\"]", SOURCE_TEXT))
+        self.assertIsNone(re.search(r"['\"]issue['\"]\s*,\s*['\"]comment['\"]", SOURCE_TEXT))
+        self.assertIsNone(re.search(r"['\"]issue['\"]\s*,\s*['\"]reopen['\"]", SOURCE_TEXT))
+
+    def test_parse_args_rejects_removed_execution_mode_flag(self) -> None:
+        with mock.patch.object(sys, "argv", ["triage_pd_ci_flaky.py", "--mode", "auto"]):
+            with redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    MODULE.parse_args()
 
 
 if __name__ == "__main__":

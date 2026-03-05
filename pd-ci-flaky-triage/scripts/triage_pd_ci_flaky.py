@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Triages recent PD CI failures and manages flaky-test issues."""
+"""Triages recent PD CI failures and outputs structured flaky-issue actions."""
 
 from __future__ import annotations
 
@@ -46,51 +46,13 @@ class ParsedFailure:
     test_name: str | None
     signatures: list[str]
     evidence_lines: list[str]
-    anchor_signatures: list[str] = dataclasses.field(default_factory=list)
-    anchor_offsets: list[int] = dataclasses.field(default_factory=list)
-    log_fetch_mode: str = "full"
-    raw_log_ref: str = ""
     tests: list[str] = dataclasses.field(default_factory=list)
     primary_test: str | None = None
     failure_type: str = "unknown"
-    stack_blocks: list[str] = dataclasses.field(default_factory=list)
     evidence_summary: str = ""
     confidence: float = 0.0
-    needs_inbox_fallback: bool = False
-    stack_tokens: list[str] = dataclasses.field(default_factory=list)
     primary_package: str | None = None
     failed_packages: list[str] = dataclasses.field(default_factory=list)
-
-
-@dataclasses.dataclass
-class CoarseFailureRecord:
-    record_id: str
-    source: str
-    ci_name: str
-    ci_url: str
-    log_url: str | None
-    occurred_at: str
-    pr_number: int | None
-    commit_sha: str | None
-    anchor_signatures: list[str]
-    anchor_offsets: list[int]
-    log_fetch_mode: str
-    raw_log_ref: str
-
-
-@dataclasses.dataclass
-class AgentAnalysisRecord:
-    record_id: str
-    tests: list[str]
-    primary_test: str | None
-    failure_type: str
-    stack_blocks: list[str]
-    evidence_summary: str
-    confidence: float
-    needs_inbox_fallback: bool
-    stack_tokens: list[str]
-    primary_package: str | None
-
 
 @dataclasses.dataclass
 class FlakyDecision:
@@ -103,19 +65,7 @@ class FlakyDecision:
     has_existing_issue: bool
     existing_issue_number: int | None
     confidence: float = 0.0
-    needs_inbox_fallback: bool = False
-    action: str = "skip"
     action_reason: str = ""
-    dedup_key: str = ""
-
-
-@dataclasses.dataclass
-class IssueResolution:
-    key: str
-    action: str
-    issue_number: int | None
-    issue_url: str | None
-    details: str
 
 
 @dataclasses.dataclass
@@ -133,18 +83,45 @@ class RunSummary:
 
 
 @dataclasses.dataclass
+class CreateAction:
+    key: str
+    test_name: str | None
+    package_name: str | None
+    title: str
+    labels: list[str]
+    links: list[str]
+    ci_names: list[str]
+    signatures: list[str]
+    evidence_summary: str
+
+
+@dataclasses.dataclass
+class CommentAction:
+    key: str
+    test_name: str | None
+    package_name: str | None
+    issue_number: int
+    issue_url: str
+    new_links: list[str]
+    ci_names: list[str]
+    signatures: list[str]
+    evidence_summary: str
+
+
+@dataclasses.dataclass
 class DownloadedLog:
     record: FailureRecord
     path: Path
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Triages recent PD CI failures and flaky issues")
+    parser = argparse.ArgumentParser(
+        description="Triages recent PD CI failures and outputs structured flaky-issue actions"
+    )
     parser.add_argument("--repo", default="tikv/pd")
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--scope", choices=["pr+push", "pr", "push"], default="pr+push")
     parser.add_argument("--ci-scope", choices=["test-all"], default="test-all")
-    parser.add_argument("--mode", choices=["auto", "dry-run"], default="auto")
     parser.add_argument("--flaky-policy", choices=["evidence-first"], default="evidence-first")
     parser.add_argument("--reopen-closed", type=parse_bool, default=True)
     parser.add_argument("--out-json", default="")
@@ -156,11 +133,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parse-workers", type=int, default=0)
     parser.add_argument("--log-spool-dir", default="")
     parser.add_argument("--keep-logs", type=parse_bool, default=False)
-    parser.add_argument("--analysis-mode", choices=["coarse-only", "agent-full"], default="agent-full")
     parser.add_argument("--agent-max-log-bytes", type=int, default=8 * 1024 * 1024)
-    parser.add_argument("--agent-confidence-threshold", type=float, default=0.65)
-    parser.add_argument("--inbox-issue-title", default="[CI triage inbox] unresolved flaky candidates")
-    parser.add_argument("--inbox-issue-labels", default="type/ci")
+    parser.add_argument("--issue-labels", default="type/ci")
     return parser.parse_args()
 
 
@@ -492,101 +466,6 @@ def parse_test_names(log_text: str) -> list[str]:
     return normalize_extracted_tests(stack_found)
 
 
-def extract_anchor_offsets(log_text: str) -> list[int]:
-    offsets: list[int] = []
-    anchor = re.compile(
-        r"--- FAIL:|=== NAME|\bTest:|panic:|DATA RACE|POTENTIAL DEADLOCK|Condition never satisfied|goleak",
-        re.IGNORECASE,
-    )
-    for idx, line in enumerate(log_text.splitlines(), start=1):
-        if GOLEAK_EXCLUDE_PATTERN.search(line):
-            continue
-        if anchor.search(line):
-            offsets.append(idx)
-    return offsets
-
-
-def _slice_block(
-    lines: list[str],
-    start: int,
-    max_lines: int,
-    stop_patterns: list[re.Pattern[str]] | None = None,
-) -> str:
-    stop_patterns = stop_patterns or COMMON_STOP_PATTERNS
-    end = min(len(lines), start + max_lines)
-    for i in range(start + 1, end):
-        if i - start < 6:
-            continue
-        if any(pattern.search(lines[i]) for pattern in stop_patterns):
-            return "\n".join(lines[start:i]).strip()
-    return "\n".join(lines[start:end]).strip()
-
-
-def extract_stack_blocks(log_text: str, signatures: list[str]) -> list[str]:
-    lines = log_text.splitlines()
-    blocks: list[str] = []
-
-    def append_block(start: int, max_lines: int, stop_patterns: list[re.Pattern[str]] | None = None) -> None:
-        block = _slice_block(lines, start=start, max_lines=max_lines, stop_patterns=stop_patterns)
-        if block:
-            blocks.append(block)
-
-    if "DATA_RACE" in signatures:
-        for i, line in enumerate(lines):
-            if re.search(r"WARNING:\s+DATA RACE", line, flags=re.IGNORECASE):
-                stop = COMMON_STOP_PATTERNS + [re.compile(r"^\s*=+\s*$")]
-                append_block(i, max_lines=280, stop_patterns=stop)
-                break
-
-    if "POTENTIAL_DEADLOCK" in signatures:
-        for i, line in enumerate(lines):
-            if re.search(r"POTENTIAL DEADLOCK", line, flags=re.IGNORECASE):
-                append_block(i, max_lines=280)
-                break
-
-    if "TIMEOUT_PANIC" in signatures:
-        for i, line in enumerate(lines):
-            if re.search(r"panic:\s+test timed out", line, flags=re.IGNORECASE):
-                append_block(i, max_lines=420)
-                break
-
-    if "GOLEAK" in signatures:
-        goleak_start_patterns = [
-            re.compile(r"found unexpected goroutines", re.IGNORECASE),
-            re.compile(r"goleak:\s+errors on successful test run", re.IGNORECASE),
-        ]
-        for i, line in enumerate(lines):
-            if GOLEAK_EXCLUDE_PATTERN.search(line):
-                continue
-            if any(pattern.search(line) for pattern in goleak_start_patterns):
-                append_block(i, max_lines=260)
-                break
-
-    if "PANIC" in signatures and "TIMEOUT_PANIC" not in signatures:
-        for i, line in enumerate(lines):
-            if re.search(r"panic:", line, flags=re.IGNORECASE):
-                append_block(i, max_lines=180)
-                break
-
-    if not blocks:
-        anchors = extract_anchor_offsets(log_text)
-        if anchors:
-            start = max(0, anchors[0] - 1)
-            append_block(start, max_lines=120)
-
-    return blocks
-
-
-def extract_stack_tokens(stack_blocks: list[str]) -> list[str]:
-    tokens: set[str] = set()
-    for block in stack_blocks:
-        for match in re.finditer(r"([A-Za-z0-9_./-]+\.go):\d+", block):
-            tokens.add(match.group(1).lower())
-        for match in re.finditer(r"\b(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)?)\b", block):
-            tokens.add(match.group(1).lower())
-    return sorted(tokens)[:48]
-
-
 def infer_failure_type(signatures: list[str]) -> str:
     for candidate in [
         "DATA_RACE",
@@ -603,37 +482,25 @@ def infer_failure_type(signatures: list[str]) -> str:
 
 def estimate_confidence(
     primary_test: str | None,
+    primary_package: str | None,
     signatures: list[str],
-    stack_blocks: list[str],
-    stack_tokens: list[str],
+    evidence_lines: list[str],
 ) -> float:
     score = 0.2
     if primary_test:
         score += 0.45
+    elif primary_package:
+        score += 0.35
     if any(sig != "UNKNOWN_FAILURE" for sig in signatures):
         score += 0.15
-    if stack_blocks:
+    if evidence_lines:
         score += 0.15
-    if stack_tokens:
-        score += 0.1
     if primary_test and "/" in primary_test:
         score += 0.05
     return min(1.0, round(score, 3))
 
 
-def extract_evidence(log_text: str, stack_blocks: list[str], max_lines: int = 30) -> list[str]:
-    if stack_blocks:
-        evidence: list[str] = []
-        for block in stack_blocks[:2]:
-            for line in block.splitlines():
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                evidence.append(stripped)
-                if len(evidence) >= max_lines:
-                    return evidence
-        return evidence
-
+def extract_evidence(log_text: str, max_lines: int = 30) -> list[str]:
     matcher = re.compile(
         r"--- FAIL:|=== NAME|\bTest:|panic:|DATA RACE|POTENTIAL DEADLOCK|goleak|Condition never satisfied",
         re.IGNORECASE,
@@ -668,10 +535,7 @@ def build_evidence_summary(
 def parse_failures_from_log(
     record: FailureRecord,
     log_text: str,
-    raw_log_ref: str,
-    analysis_mode: str,
     agent_max_log_bytes: int,
-    confidence_threshold: float,
 ) -> list[ParsedFailure]:
     if agent_max_log_bytes > 0 and len(log_text) > agent_max_log_bytes:
         log_text = log_text[:agent_max_log_bytes]
@@ -681,37 +545,25 @@ def parse_failures_from_log(
     primary_test = tests[0] if tests else None
     failed_packages = parse_failed_packages(log_text)
     primary_package = failed_packages[0] if failed_packages else None
-    anchor_offsets = extract_anchor_offsets(log_text)
-    stack_blocks = extract_stack_blocks(log_text, signatures) if analysis_mode == "agent-full" else []
-    stack_tokens = extract_stack_tokens(stack_blocks) if analysis_mode == "agent-full" else []
     failure_type = infer_failure_type(signatures)
-    evidence = extract_evidence(log_text, stack_blocks=stack_blocks)
-    confidence = (
-        estimate_confidence(primary_test=primary_test, signatures=signatures, stack_blocks=stack_blocks, stack_tokens=stack_tokens)
-        if analysis_mode == "agent-full"
-        else 0.0
-    )
-    needs_inbox_fallback = analysis_mode == "agent-full" and (
-        (primary_test is None and primary_package is None) or confidence < confidence_threshold
+    evidence = extract_evidence(log_text)
+    confidence = estimate_confidence(
+        primary_test=primary_test,
+        primary_package=primary_package,
+        signatures=signatures,
+        evidence_lines=evidence,
     )
 
     common_kwargs = {
         "record_id": record.record_id,
         "signatures": signatures,
         "evidence_lines": evidence,
-        "anchor_signatures": signatures,
-        "anchor_offsets": anchor_offsets,
-        "log_fetch_mode": "full",
-        "raw_log_ref": raw_log_ref,
         "tests": tests,
         "primary_test": primary_test,
         "primary_package": primary_package,
         "failed_packages": failed_packages,
         "failure_type": failure_type,
-        "stack_blocks": stack_blocks,
         "confidence": confidence,
-        "needs_inbox_fallback": needs_inbox_fallback,
-        "stack_tokens": stack_tokens,
     }
 
     if "GOLEAK" in signatures and primary_package:
@@ -1081,10 +933,7 @@ def parse_log_file(item: DownloadedLog, args: argparse.Namespace) -> list[Parsed
     return parse_failures_from_log(
         record=item.record,
         log_text=log_text,
-        raw_log_ref=str(item.path),
-        analysis_mode=args.analysis_mode,
         agent_max_log_bytes=args.agent_max_log_bytes,
-        confidence_threshold=args.agent_confidence_threshold,
     )
 
 
@@ -1282,52 +1131,6 @@ def fetch_ci_records(
     return prow_failures + actions_failures, outcomes
 
 
-def build_coarse_records(
-    parsed: list[ParsedFailure],
-    records_by_id: dict[str, FailureRecord],
-) -> list[CoarseFailureRecord]:
-    coarse_by_record: dict[str, CoarseFailureRecord] = {}
-    for item in parsed:
-        if item.record_id in coarse_by_record:
-            continue
-        record = records_by_id[item.record_id]
-        coarse_by_record[item.record_id] = CoarseFailureRecord(
-            record_id=item.record_id,
-            source=record.source,
-            ci_name=record.ci_name,
-            ci_url=record.ci_url,
-            log_url=record.log_url,
-            occurred_at=record.occurred_at,
-            pr_number=record.pr_number,
-            commit_sha=record.commit_sha,
-            anchor_signatures=item.anchor_signatures,
-            anchor_offsets=item.anchor_offsets,
-            log_fetch_mode=item.log_fetch_mode,
-            raw_log_ref=item.raw_log_ref,
-        )
-    return sorted(coarse_by_record.values(), key=lambda x: x.record_id)
-
-
-def build_agent_analyses(parsed: list[ParsedFailure]) -> list[AgentAnalysisRecord]:
-    analysis_by_record: dict[str, AgentAnalysisRecord] = {}
-    for item in parsed:
-        if item.record_id in analysis_by_record:
-            continue
-        analysis_by_record[item.record_id] = AgentAnalysisRecord(
-            record_id=item.record_id,
-            tests=item.tests,
-            primary_test=item.primary_test,
-            failure_type=item.failure_type,
-            stack_blocks=item.stack_blocks,
-            evidence_summary=item.evidence_summary,
-            confidence=item.confidence,
-            needs_inbox_fallback=item.needs_inbox_fallback,
-            stack_tokens=item.stack_tokens,
-            primary_package=item.primary_package,
-        )
-    return sorted(analysis_by_record.values(), key=lambda x: x.record_id)
-
-
 def load_flaky_issues(repo: str, state: str, summary: RunSummary, retries: int) -> list[dict[str, Any]]:
     data = run_gh_json(
         [
@@ -1363,21 +1166,10 @@ def normalize_test_name_for_match(test_name: str) -> str:
     return re.sub(r"\s+", "", test_name.strip().lower().strip("`"))
 
 
-def extract_issue_stack_tokens(issue: dict[str, Any]) -> set[str]:
-    text = f"{issue.get('title') or ''}\n{issue.get('body') or ''}"
-    tokens: set[str] = set()
-    for match in re.finditer(r"([A-Za-z0-9_./-]+\.go):\d+", text):
-        tokens.add(match.group(1).lower())
-    for match in re.finditer(r"\b(Test[A-Za-z0-9_]+(?:/[A-Za-z0-9_.-]+)?)\b", text):
-        tokens.add(match.group(1).lower())
-    return tokens
-
-
 def score_issue_match(
     issue: dict[str, Any],
     test_name: str | None,
     signatures: list[str],
-    stack_tokens: list[str],
     package_name: str | None = None,
 ) -> int:
     title = normalize_issue_text(issue.get("title") or "")
@@ -1431,16 +1223,9 @@ def score_issue_match(
         if phrase in body:
             score = max(score, 40)
 
-    stack_overlap = 0
-    if stack_tokens:
-        issue_tokens = extract_issue_stack_tokens(issue)
-        stack_overlap = len(set(stack_tokens) & issue_tokens)
-        if stack_overlap > 0:
-            score = max(score, 70 + min(30, stack_overlap * 4))
-
     if not test_name:
         has_non_unknown_signature = any(sig != "UNKNOWN_FAILURE" for sig in signatures)
-        if not has_non_unknown_signature and stack_overlap == 0:
+        if not has_non_unknown_signature:
             return 0
     elif not has_test_token_match:
         # A known test must match title/body token to avoid false issue linking.
@@ -1450,7 +1235,7 @@ def score_issue_match(
         # Avoid matching broad "flaky" issue text when test identity is unclear.
         return 0
 
-    if package_name and not has_package_match and not test_name and score < 100:
+    if package_name and not has_package_match and not test_name and score < 95:
         # Package-level matching should not rely on generic flaky wording or weak stack overlap.
         return 0
 
@@ -1461,7 +1246,6 @@ def choose_issue_match(
     issues: list[dict[str, Any]],
     test_name: str | None,
     signatures: list[str],
-    stack_tokens: list[str],
     package_name: str | None = None,
 ) -> dict[str, Any] | None:
     best: dict[str, Any] | None = None
@@ -1474,7 +1258,6 @@ def choose_issue_match(
             test_name=test_name,
             package_name=package_name,
             signatures=signatures,
-            stack_tokens=stack_tokens,
         )
         if score <= 0:
             continue
@@ -1504,7 +1287,6 @@ def decide_flaky(
     sha_set = {r.commit_sha for r in records if r.commit_sha}
     confidence_values = [e.confidence for e in entries if e.confidence > 0]
     confidence = round(sum(confidence_values) / len(confidence_values), 3) if confidence_values else 0.0
-    needs_inbox_fallback = any(e.needs_inbox_fallback for e in entries)
 
     has_existing_issue = open_issue is not None or closed_issue is not None
     existing_issue = open_issue or closed_issue
@@ -1530,9 +1312,7 @@ def decide_flaky(
             has_existing_issue=True,
             existing_issue_number=int(existing_issue["number"]),
             confidence=confidence,
-            needs_inbox_fallback=needs_inbox_fallback,
             action_reason="matched_existing_issue",
-            dedup_key=key,
         )
 
     if len(pr_set) >= 2:
@@ -1546,9 +1326,7 @@ def decide_flaky(
             has_existing_issue=False,
             existing_issue_number=None,
             confidence=confidence,
-            needs_inbox_fallback=needs_inbox_fallback,
             action_reason="cross_pr_repro",
-            dedup_key=key,
         )
 
     if has_same_sha_flap:
@@ -1562,9 +1340,7 @@ def decide_flaky(
             has_existing_issue=False,
             existing_issue_number=None,
             confidence=confidence,
-            needs_inbox_fallback=needs_inbox_fallback,
             action_reason="same_sha_flap",
-            dedup_key=key,
         )
 
     return FlakyDecision(
@@ -1577,54 +1353,8 @@ def decide_flaky(
         has_existing_issue=False,
         existing_issue_number=None,
         confidence=confidence,
-        needs_inbox_fallback=True,
         action_reason="insufficient_evidence",
-        dedup_key=key,
     )
-
-
-def format_reason(decision: FlakyDecision) -> str:
-    if decision.reason == "existing_flaky_issue":
-        return "Matched existing flaky issue"
-    if decision.reason == "reproduced_across_prs":
-        return "Reproduced across multiple PRs in the scan window"
-    if decision.reason == "same_sha_flapping":
-        return "Same commit shows fail/pass flapping behavior"
-    return "Only observed in isolated context; likely PR regression"
-
-
-def issue_comment_body(
-    decision: FlakyDecision,
-    links: list[str],
-    signatures: list[str],
-    repo: str,
-    evidence_summary: str,
-    package_name: str | None = None,
-) -> str:
-    test_display = decision.test_name or (f"{package_name} package" if package_name else decision.key)
-    sig_display = ", ".join(signatures)
-    intro = (
-        f"Observed flaky failure again for `{test_display}`."
-        if decision.is_flaky
-        else f"Observed unresolved CI failure candidate for `{test_display}`."
-    )
-    lines = [
-        intro,
-        "",
-        "CI links:",
-    ]
-    lines.extend([f"- {link}" for link in links])
-    lines.extend(
-        [
-            "",
-            f"Auto-triage basis: {format_reason(decision)}.",
-            f"Failure signatures: {sig_display}",
-            f"Confidence: {decision.confidence:.2f}",
-            f"Evidence summary: {evidence_summary}",
-            f"Source repo: {repo}",
-        ]
-    )
-    return "\n".join(lines)
 
 
 def build_issue_title(test_name: str | None, signatures: list[str], package_name: str | None = None) -> str:
@@ -1639,75 +1369,6 @@ def build_issue_title(test_name: str | None, signatures: list[str], package_name
     return "Unknown test is flaky"
 
 
-def build_issue_body(
-    test_name: str | None,
-    ci_names: list[str],
-    links: list[str],
-    decision: FlakyDecision,
-    signatures: list[str],
-    records: list[FailureRecord],
-    evidence_summary: str,
-    stack_blocks: list[str],
-    package_name: str | None = None,
-) -> str:
-    jobs_block = "\n".join([f"- {name}" for name in ci_names])
-    links_block = "\n".join(links)
-    prs = sorted({r.pr_number for r in records if r.pr_number is not None})
-    shas = sorted({r.commit_sha for r in records if r.commit_sha})
-
-    triage_meta_lines = [
-        f"Auto-triage basis: {format_reason(decision)}.",
-        f"Signatures: {', '.join(signatures)}",
-        f"Distinct PR count in window: {decision.distinct_pr_count}",
-        f"Distinct commit count in window: {decision.distinct_sha_count}",
-        f"Confidence: {decision.confidence:.2f}",
-        f"Evidence summary: {evidence_summary}",
-    ]
-
-    target_key = test_name or (f"package:{package_name}" if package_name else decision.key)
-    anything_else = [
-        f"Test key: {target_key}",
-        f"PRs: {prs if prs else 'N/A'}",
-        f"SHAs: {shas if shas else 'N/A'}",
-        "Source: auto triage from Prow + GitHub Actions",
-        *triage_meta_lines,
-    ]
-    if package_name:
-        anything_else.insert(1, f"Fail package: {package_name}")
-
-    stack_excerpt = "\n\n".join(stack_blocks[:2]) if stack_blocks else "N/A"
-
-    return "\n".join(
-        [
-            "## Flaky Test",
-            "",
-            "### Which jobs are failing",
-            jobs_block,
-            "",
-            "### CI link",
-            links_block,
-            "",
-            "### Reason for failure (if possible)",
-            "",
-            "",
-            "### Stack excerpt",
-            stack_excerpt,
-            "",
-            "### Anything else",
-            "\n".join(anything_else),
-        ]
-    )
-
-
-def parse_issue_number_from_url(url: str | None) -> int | None:
-    if not url:
-        return None
-    match = re.search(r"/issues/(\d+)", url)
-    if not match:
-        return None
-    return int(match.group(1))
-
-
 def parse_label_list(raw: str) -> list[str]:
     labels = [label.strip() for label in raw.split(",")]
     labels = [label for label in labels if label]
@@ -1716,117 +1377,51 @@ def parse_label_list(raw: str) -> list[str]:
     return labels
 
 
-def ensure_inbox_issue(
-    args: argparse.Namespace,
-    open_issues: list[dict[str, Any]],
-    summary: RunSummary,
-) -> dict[str, Any] | None:
-    target = normalize_issue_text(args.inbox_issue_title)
-    for issue in open_issues:
-        if normalize_issue_text(issue.get("title") or "") == target:
-            return issue
-
-    if args.mode != "auto":
-        return {
-            "number": None,
-            "url": "",
-            "state": "open",
-            "title": args.inbox_issue_title,
-            "body": "",
-            "updatedAt": now_utc().isoformat(),
-        }
-
-    labels = parse_label_list(args.inbox_issue_labels)
-    create_cmd = [
-        "gh",
-        "issue",
-        "create",
-        "--repo",
-        args.repo,
-        "--title",
-        args.inbox_issue_title,
-    ]
-    for label in labels:
-        create_cmd.extend(["--label", label])
-    create_cmd.extend(
-        [
-            "--body",
-            "This issue collects CI failures that cannot be confidently mapped to a specific flaky test.",
-        ]
-    )
-    ok, out, _ = run_cmd(create_cmd, summary=summary, retries=args.retry_count)
-    if not ok:
-        return None
-
-    url = out.strip().splitlines()[-1] if out.strip() else ""
-    number = parse_issue_number_from_url(url)
-    return {
-        "number": number,
-        "url": url,
-        "state": "open",
-        "title": args.inbox_issue_title,
-        "body": "",
-        "updatedAt": now_utc().isoformat(),
-    }
-
-
-def process_issues(
+def build_issue_actions(
     args: argparse.Namespace,
     grouped: dict[str, list[ParsedFailure]],
     records_by_id: dict[str, FailureRecord],
     decisions: list[FlakyDecision],
     issue_matches: dict[str, dict[str, Any] | None],
     signatures_by_key: dict[str, list[str]],
-    open_issues: list[dict[str, Any]],
     summary: RunSummary,
-) -> list[IssueResolution]:
-    resolutions: list[IssueResolution] = []
+) -> tuple[list[CreateAction], list[CommentAction], list[CommentAction]]:
+    create_actions: list[CreateAction] = []
+    comment_actions: list[CommentAction] = []
+    reopen_actions: list[CommentAction] = []
     issue_cache_text: dict[int, str] = {}
     posted_links_by_issue: dict[int, set[str]] = {}
-    inbox_issue: dict[str, Any] | None = None
 
     for decision in decisions:
         key = decision.key
-        if not decision.is_flaky and not decision.needs_inbox_fallback:
+        if not decision.is_flaky:
             continue
 
         entries = grouped[key]
-        records = [records_by_id[e.record_id] for e in entries]
+        records = [records_by_id[e.record_id] for e in entries if e.record_id in records_by_id]
+        if not records:
+            continue
         links = sorted({r.ci_url for r in records if r.ci_url})
+        if not links:
+            continue
         ci_names = sorted({r.ci_name for r in records if r.ci_name})
         signatures = signatures_by_key.get(key, ["UNKNOWN_FAILURE"])
-        evidence_summary = entries[0].evidence_summary if entries else ""
-        stack_blocks = entries[0].stack_blocks if entries else []
-        package_name = entries[0].primary_package if entries else None
-        labels = parse_label_list(args.inbox_issue_labels)
+        evidence_summary = entries[0].evidence_summary
+        package_name = entries[0].primary_package
+        test_name = entries[0].test_name
+        labels = parse_label_list(args.issue_labels)
 
         issue = issue_matches.get(key)
-        is_inbox_fallback = False
-        if issue is None and decision.needs_inbox_fallback:
-            if inbox_issue is None:
-                inbox_issue = ensure_inbox_issue(args=args, open_issues=open_issues, summary=summary)
-            issue = inbox_issue
-            is_inbox_fallback = issue is not None
 
         if issue:
             issue_number_raw = issue.get("number")
-            issue_number = int(issue_number_raw) if issue_number_raw is not None else None
-            issue_url = issue.get("url")
+            issue_number = int(issue_number_raw) if issue_number_raw is not None else 0
+            if issue_number <= 0:
+                continue
+            issue_url = issue.get("url") or f"https://github.com/{args.repo}/issues/{issue_number}"
             state = (issue.get("state") or "").lower()
 
-            reopened = False
-            if issue_number is not None and state == "closed" and args.reopen_closed:
-                if args.mode == "auto":
-                    ok, _, _ = run_cmd(
-                        ["gh", "issue", "reopen", str(issue_number), "--repo", args.repo],
-                        summary=summary,
-                        retries=args.retry_count,
-                    )
-                    reopened = ok
-                else:
-                    reopened = True
-
-            if issue_number is not None and issue_number not in issue_cache_text:
+            if issue_number not in issue_cache_text:
                 detail = run_gh_json(
                     [
                         "issue",
@@ -1840,145 +1435,119 @@ def process_issues(
                     summary=summary,
                     retries=args.retry_count,
                 )
-                if detail is None:
-                    issue_cache_text[issue_number] = ""
-                else:
-                    comment_bodies = "\n".join(c.get("body", "") for c in (detail.get("comments") or []))
-                    issue_cache_text[issue_number] = (detail.get("body", "") or "") + "\n" + comment_bodies
+                comment_bodies = "\n".join(c.get("body", "") for c in (detail or {}).get("comments", []) or [])
+                issue_cache_text[issue_number] = ((detail or {}).get("body", "") or "") + "\n" + comment_bodies
 
-            existing_text = issue_cache_text.get(issue_number, "") if issue_number is not None else ""
-            posted_links = posted_links_by_issue.setdefault(issue_number, set()) if issue_number is not None else set()
+            existing_text = issue_cache_text.get(issue_number, "")
+            posted_links = posted_links_by_issue.setdefault(issue_number, set())
             new_links = [
                 link
                 for link in links
                 if link and link not in existing_text and link not in posted_links
             ]
             if not new_links:
-                resolutions.append(
-                    IssueResolution(
-                        key=key,
-                        action="skipped_dedup",
-                        issue_number=issue_number,
-                        issue_url=issue_url,
-                        details="all ci links already present",
-                    )
-                )
                 continue
 
-            comment_body = issue_comment_body(
-                decision=decision,
-                links=new_links,
-                signatures=signatures,
-                repo=args.repo,
-                evidence_summary=evidence_summary,
-                package_name=package_name,
-            )
-
-            if issue_number is None:
-                action = "dryrun_inbox_comment" if is_inbox_fallback else "dryrun_comment"
-            elif args.mode == "auto":
-                ok, _, _ = run_cmd(
-                    [
-                        "gh",
-                        "issue",
-                        "comment",
-                        str(issue_number),
-                        "--repo",
-                        args.repo,
-                        "--body",
-                        comment_body,
-                    ],
-                    summary=summary,
-                    retries=args.retry_count,
-                )
-                if ok:
-                    if is_inbox_fallback:
-                        action = "inbox_reopened_and_commented" if reopened else "inbox_commented"
-                    else:
-                        action = "reopened_and_commented" if reopened else "commented"
-                    posted_links.update(new_links)
-                else:
-                    action = "comment_failed"
-            else:
-                if is_inbox_fallback:
-                    action = "dryrun_inbox_reopen_and_comment" if reopened else "dryrun_inbox_comment"
-                else:
-                    action = "dryrun_reopen_and_comment" if reopened else "dryrun_comment"
-                posted_links.update(new_links)
-
-            resolutions.append(
-                IssueResolution(
-                    key=key,
-                    action=action,
-                    issue_number=issue_number,
-                    issue_url=issue_url,
-                    details=f"links={len(new_links)}",
-                )
-            )
-            continue
-
-        if not decision.is_flaky:
-            resolutions.append(
-                IssueResolution(
-                    key=key,
-                    action="inbox_unavailable_skip",
-                    issue_number=None,
-                    issue_url=None,
-                    details="needs_inbox_fallback but inbox issue unavailable",
-                )
-            )
-            continue
-
-        title = build_issue_title(test_name=decision.test_name, signatures=signatures, package_name=package_name)
-        body = build_issue_body(
-            test_name=decision.test_name,
-            ci_names=ci_names,
-            links=links,
-            decision=decision,
-            signatures=signatures,
-            records=records,
-            evidence_summary=evidence_summary,
-            stack_blocks=stack_blocks,
-            package_name=package_name,
-        )
-
-        issue_url = None
-        issue_number = None
-        action = "dryrun_create"
-        if args.mode == "auto":
-            create_cmd = [
-                "gh",
-                "issue",
-                "create",
-                "--repo",
-                args.repo,
-                "--title",
-                title,
-            ]
-            for label in labels:
-                create_cmd.extend(["--label", label])
-            create_cmd.extend(["--body", body])
-
-            ok, out, _ = run_cmd(create_cmd, summary=summary, retries=args.retry_count)
-            if ok:
-                issue_url = out.strip().splitlines()[-1] if out.strip() else None
-                issue_number = parse_issue_number_from_url(issue_url)
-                action = "created"
-            else:
-                action = "create_failed"
-
-        resolutions.append(
-            IssueResolution(
+            action = CommentAction(
                 key=key,
-                action=action,
+                test_name=test_name,
+                package_name=package_name,
                 issue_number=issue_number,
                 issue_url=issue_url,
-                details=title,
+                new_links=new_links,
+                ci_names=ci_names,
+                signatures=signatures,
+                evidence_summary=evidence_summary,
+            )
+            if state == "closed" and args.reopen_closed:
+                reopen_actions.append(action)
+            else:
+                comment_actions.append(action)
+            posted_links.update(new_links)
+            continue
+
+        title = build_issue_title(test_name=test_name, signatures=signatures, package_name=package_name)
+        create_actions.append(
+            CreateAction(
+                key=key,
+                test_name=test_name,
+                package_name=package_name,
+                title=title,
+                labels=labels,
+                links=links,
+                ci_names=ci_names,
+                signatures=signatures,
+                evidence_summary=evidence_summary,
             )
         )
 
-    summary.issue_actions = len(resolutions)
-    return resolutions
+    summary.issue_actions = len(create_actions) + len(comment_actions) + len(reopen_actions)
+    return create_actions, comment_actions, reopen_actions
+
+
+def to_action_payload(
+    summary: RunSummary,
+    create_actions: list[CreateAction],
+    comment_actions: list[CommentAction],
+    reopen_actions: list[CommentAction],
+) -> dict[str, Any]:
+    return {
+        "window": {
+            "start": summary.scanned_window_start,
+            "end": summary.scanned_window_end,
+        },
+        "counts": {
+            "prow_records": summary.prow_records,
+            "actions_records": summary.actions_records,
+            "parsed_failures": summary.parsed_failures,
+            "flaky_true": summary.flaky_true,
+            "create": len(create_actions),
+            "comment": len(comment_actions),
+            "reopen_and_comment": len(reopen_actions),
+        },
+        "create": [
+            {
+                "key": item.key,
+                "test_name": item.test_name,
+                "package": item.package_name,
+                "title": item.title,
+                "labels": item.labels,
+                "links": item.links,
+                "ci_names": item.ci_names,
+                "signatures": item.signatures,
+                "evidence_summary": item.evidence_summary,
+            }
+            for item in create_actions
+        ],
+        "comment": [
+            {
+                "key": item.key,
+                "test_name": item.test_name,
+                "package": item.package_name,
+                "issue_number": item.issue_number,
+                "issue_url": item.issue_url,
+                "new_links": item.new_links,
+                "ci_names": item.ci_names,
+                "signatures": item.signatures,
+                "evidence_summary": item.evidence_summary,
+            }
+            for item in comment_actions
+        ],
+        "reopen_and_comment": [
+            {
+                "key": item.key,
+                "test_name": item.test_name,
+                "package": item.package_name,
+                "issue_number": item.issue_number,
+                "issue_url": item.issue_url,
+                "new_links": item.new_links,
+                "ci_names": item.ci_names,
+                "signatures": item.signatures,
+                "evidence_summary": item.evidence_summary,
+            }
+            for item in reopen_actions
+        ],
+    }
 
 
 def ensure_gh_auth(summary: RunSummary, retries: int) -> bool:
@@ -1997,7 +1566,9 @@ def build_output(
     summary: RunSummary,
     grouped: dict[str, list[ParsedFailure]],
     decisions: list[FlakyDecision],
-    resolutions: list[IssueResolution],
+    create_actions: list[CreateAction],
+    comment_actions: list[CommentAction],
+    reopen_actions: list[CommentAction],
     records_by_id: dict[str, FailureRecord],
 ) -> None:
     print("Scanned window")
@@ -2006,8 +1577,6 @@ def build_output(
     print(f"- until: {summary.scanned_window_end}")
     print(f"- scope: {args.scope}")
     print(f"- ci-scope: {args.ci_scope}")
-    print(f"- mode: {args.mode}")
-    print(f"- analysis-mode: {args.analysis_mode}")
     print(f"- pipeline-mode: {args.pipeline_mode}")
     print(f"- failures from prow: {summary.prow_records}")
     print(f"- failures from actions: {summary.actions_records}")
@@ -2019,7 +1588,8 @@ def build_output(
         print("- none")
     else:
         for key, entries in sorted(grouped.items(), key=lambda item: len(item[1]), reverse=True):
-            test_name = entries[0].test_name or key
+            lead = entries[0]
+            test_name = lead.test_name or (f"package:{lead.primary_package}" if lead.primary_package else key)
             prs = sorted({records_by_id[e.record_id].pr_number for e in entries if records_by_id[e.record_id].pr_number is not None})
             print(f"- {test_name}: occurrences={len(entries)} prs={prs if prs else 'N/A'}")
 
@@ -2032,15 +1602,19 @@ def build_output(
             print(
                 f"- {d.test_name or d.key}: {status}; reason={d.reason}; "
                 f"prs={d.distinct_pr_count}; issue={d.existing_issue_number or 'none'}; "
-                f"confidence={d.confidence:.2f}; inbox_fallback={d.needs_inbox_fallback}"
+                f"confidence={d.confidence:.2f}; action_reason={d.action_reason}"
             )
 
     print("\nIssue actions")
-    if not resolutions:
+    if not (create_actions or comment_actions or reopen_actions):
         print("- none")
     else:
-        for r in resolutions:
-            print(f"- {r.key}: {r.action}; issue={r.issue_number or 'N/A'}; {r.details}")
+        for item in create_actions:
+            print(f"- create: {item.key}; title={item.title}; links={len(item.links)}")
+        for item in comment_actions:
+            print(f"- comment: {item.key}; issue={item.issue_number}; new_links={len(item.new_links)}")
+        for item in reopen_actions:
+            print(f"- reopen+comment: {item.key}; issue={item.issue_number}; new_links={len(item.new_links)}")
 
     print("\nSkipped/Unknown")
     skipped = list(summary.skipped_unknown)
@@ -2059,7 +1633,7 @@ def main() -> int:
     start = end - dt.timedelta(days=args.days)
     summary = RunSummary(scanned_window_start=start.isoformat(), scanned_window_end=end.isoformat())
     log_progress(
-        f"triage started repo={args.repo} days={args.days} scope={args.scope} mode={args.mode} "
+        f"triage started repo={args.repo} days={args.days} scope={args.scope} "
         f"(disable with {PROGRESS_ENV}=0)"
     )
 
@@ -2069,7 +1643,9 @@ def main() -> int:
             summary=summary,
             grouped={},
             decisions=[],
-            resolutions=[],
+            create_actions=[],
+            comment_actions=[],
+            reopen_actions=[],
             records_by_id={},
         )
         return 1
@@ -2085,22 +1661,15 @@ def main() -> int:
 
     grouped: dict[str, list[ParsedFailure]] = {}
     signatures_by_key: dict[str, list[str]] = {}
-    stack_tokens_by_key: dict[str, list[str]] = {}
     for item in parsed:
         grouped.setdefault(item.key, []).append(item)
         signatures_by_key.setdefault(item.key, [])
-        stack_tokens_by_key.setdefault(item.key, [])
         for sig in item.signatures:
             if sig not in signatures_by_key[item.key]:
                 signatures_by_key[item.key].append(sig)
-        for token in item.stack_tokens:
-            if token not in stack_tokens_by_key[item.key]:
-                stack_tokens_by_key[item.key].append(token)
 
     open_issues = load_flaky_issues(repo=args.repo, state="open", summary=summary, retries=args.retry_count)
     closed_issues = load_flaky_issues(repo=args.repo, state="closed", summary=summary, retries=args.retry_count)
-    coarse_records = build_coarse_records(parsed=parsed, records_by_id=records_by_id)
-    agent_analyses = build_agent_analyses(parsed=parsed)
 
     decisions: list[FlakyDecision] = []
     issue_matches: dict[str, dict[str, Any] | None] = {}
@@ -2109,20 +1678,17 @@ def main() -> int:
         test_name = entries[0].test_name
         package_name = entries[0].primary_package
         signatures = signatures_by_key.get(key, [])
-        stack_tokens = stack_tokens_by_key.get(key, [])
         open_match = choose_issue_match(
             open_issues,
             test_name=test_name,
             package_name=package_name,
             signatures=signatures,
-            stack_tokens=stack_tokens,
         )
         closed_match = None if open_match else choose_issue_match(
             closed_issues,
             test_name=test_name,
             package_name=package_name,
             signatures=signatures,
-            stack_tokens=stack_tokens,
         )
         issue_matches[key] = open_match or closed_match
 
@@ -2140,37 +1706,38 @@ def main() -> int:
 
     summary.flaky_true = sum(1 for d in decisions if d.is_flaky)
 
-    resolutions = process_issues(
+    create_actions, comment_actions, reopen_actions = build_issue_actions(
         args=args,
         grouped=grouped,
         records_by_id=records_by_id,
         decisions=decisions,
         issue_matches=issue_matches,
         signatures_by_key=signatures_by_key,
-        open_issues=open_issues,
         summary=summary,
     )
-    log_progress(f"issue resolution stage done: actions={len(resolutions)} mode={args.mode}")
+    log_progress(
+        "issue action stage done: "
+        f"create={len(create_actions)} comment={len(comment_actions)} reopen={len(reopen_actions)}"
+    )
 
     build_output(
         args=args,
         summary=summary,
         grouped=grouped,
         decisions=decisions,
-        resolutions=resolutions,
+        create_actions=create_actions,
+        comment_actions=comment_actions,
+        reopen_actions=reopen_actions,
         records_by_id=records_by_id,
     )
 
     if args.out_json:
-        payload = {
-            "summary": dataclasses.asdict(summary),
-            "records": [dataclasses.asdict(r) for r in all_records],
-            "coarse_records": [dataclasses.asdict(r) for r in coarse_records],
-            "agent_analyses": [dataclasses.asdict(r) for r in agent_analyses],
-            "parsed_failures": [dataclasses.asdict(p) for p in parsed],
-            "decisions": [dataclasses.asdict(d) for d in decisions],
-            "issue_actions": [dataclasses.asdict(r) for r in resolutions],
-        }
+        payload = to_action_payload(
+            summary=summary,
+            create_actions=create_actions,
+            comment_actions=comment_actions,
+            reopen_actions=reopen_actions,
+        )
         with open(args.out_json, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, sort_keys=True)
         log_progress(f"wrote json output: {args.out_json}")
