@@ -2,60 +2,76 @@
 
 ## Evidence Priority
 
-1. Existing flaky issue match (`type/ci`) takes precedence.
-2. Cross-PR reproduction within scan window (`distinct_pr_count >= 2`).
-3. Same-SHA fail/pass flapping evidence (when history provides both states).
-4. Otherwise classify as likely PR regression / insufficient evidence.
+1. Existing `type/ci` flaky issue match.
+2. Cross-PR reproduction within the scan window.
+3. Same-SHA fail/pass flapping from prow history.
+4. Otherwise treat as likely regression or insufficient flaky evidence.
 
-## Failure Signature Extraction
+## Signature Extraction
 
-Use these signatures from logs:
+Use signatures only as raw hints. Do not map them 1:1 to final excerpt shape.
+
 - `DATA_RACE`: `WARNING: DATA RACE`
 - `POTENTIAL_DEADLOCK`: `POTENTIAL DEADLOCK`
 - `TIMEOUT_PANIC`: `panic: test timed out`
-- `GOLEAK`: lines containing `goleak` (excluding `go: downloading ... goleak`)
+- `GOLEAK`: real goleak lines only, never `go: downloading ... goleak`
 - `CONDITION_NEVER_SATISFIED`: `Condition never satisfied`
-- `PANIC`: generic `panic:`
+- `PANIC`: generic panic markers
 - `UNKNOWN_FAILURE`: no known signature found
 
-## Test Name Extraction
+## Target Extraction
 
-Extract in this order (collect all unique matches):
-1. `--- FAIL: <TestName>`
-2. `=== NAME <TestName>`
-3. `Test: <Suite/Test>`
-4. `running tests:` block (`panic: test timed out` context)
-5. Stack-style names (`pkg.TestFoo`, `suite.TestFoo/SubCase`)
+Prefer exact identity over suite-level identity.
 
-If no test name is found, use signature-based key (`signature::<name>`).
+1. Exact `--- FAIL: <Suite/Subtest>`
+2. `=== NAME <Suite/Subtest>`
+3. `Test: <Suite/Subtest>`
+4. `running tests:` block
+5. Package identity from `FAIL github.com/...`
 
-## Stack Extraction
+Normalize parameterized subtests back to the root test when the suffix is runtime args only.
 
-- Extract full stack *blocks* by failure type, not just keyword lines:
-  - timeout panic: include goroutine dump block
-  - data race: include read/write sections up to separator
-  - potential deadlock: include deadlock report block
-  - goleak: include unexpected goroutine block
+## Failure Families
 
-This supports downstream high-confidence issue matching.
+Classify by the best excerpt shape:
 
-## Issue Matching Priority
+1. `assertion / condition`
+- Use the full `Error Trace` + `Error` + `Test` block.
 
-For each failure key:
+2. `timeout-only`
+- Use `panic: test timed out` + `running tests:` + the target frame.
+
+3. `goleak / package`
+- Keep the full unexpected goroutines block through `FAIL <package>`.
+
+4. `panic / package`
+- Keep the panic headline, embedded stack, and `FAIL <package>`.
+
+5. `deadlock`
+- Keep the assertion header and the full deadlock report.
+
+6. `data race / test`
+- Keep the test clue plus the full race block.
+
+7. `unknown fallback`
+- Use suite summary only to locate the failing subtest.
+- If no stronger block exists, emit to `unknown[]`.
+
+## Unknown Handling
+
+- `UNKNOWN_FAILURE` must never create, reopen, or comment on a GitHub issue.
+- Unknown items are direct outputs only.
+- Keep them in JSON `unknown[]` so a human can inspect them later.
+
+## Issue Matching Guardrails
+
 1. Open issues first, then closed issues.
-2. Score by title/body match:
-- exact test token in title
-- test token in body
-- signature phrase in title/body
- - stack token overlap (`*.go` paths and `Test*` tokens)
-3. Break ties by latest `updatedAt`.
-
-Guardrails:
-- `UNKNOWN_FAILURE` must not match solely on generic words like `flaky`.
-- If no confident match is found, route to triage inbox issue.
+2. Require exact test or package evidence for confident matching.
+3. `UNKNOWN_FAILURE` must not match on generic words such as `flaky`.
+4. A suite summary alone is not enough evidence for final snippet selection.
 
 ## Idempotency
 
 - Never comment the same CI link twice on the same issue.
-- Never create more than one new issue for the same failure key in one run.
-- In dry-run mode, do not mutate GitHub state.
+- Never create more than one issue action for the same failure key in one run.
+- Unknown items are exempt because they do not create issue actions.

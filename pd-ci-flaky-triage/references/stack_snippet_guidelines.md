@@ -1,86 +1,171 @@
-# Stack Snippet Guidelines (Reference-Driven)
+# Stack Snippet Guidelines
 
 ## Objective
-Generate a short failure excerpt for issue body section `### Which jobs are failing`.
-The excerpt must let reviewers identify, within ~30 seconds:
-- failing target (`test` or `package`)
-- failure class (`timeout`, `assertion`, `data race`, `deadlock`, `panic`, `goleak`)
-- strongest evidence line
 
-This replaces script-generated stack blocks. The triage script now only outputs structured actions.
+Generate `### Which jobs are failing` excerpts that help a reviewer answer three questions quickly:
 
-## Source of Truth
-Build retrieval features from:
-- `tikv/pd` historical `type/ci` issue bodies
-- `../pd-flaky-fix/references/flaky-pr-corpus.jsonl` (test/package semantics and fix-pattern hints)
+1. Which exact test or package failed?
+2. What is the failure shape?
+3. Which frames or traces should be inspected next to fix the flaky test?
 
-Do not rely on a fixed hardcoded anchor whitelist as the only matching criterion.
+The triage script does not generate these snippets. The agent must extract them from raw CI logs.
 
-## Output Contract
-1. Put excerpt only under `### Which jobs are failing` fenced code block.
-2. Keep `### Reason for failure (if possible)` empty unless human investigation adds context.
-3. Prefer a single excerpt window; only include two windows when one cannot carry target + error.
-4. Never dump raw long logs.
+## Manual Investigation Flow
 
-## Target Normalization
-1. Parameterized subtests collapse to root test when parameter suffix is pure runtime args.
-Example: `TestQPS/concurrency=1000,reserveN=10,limit=400000` -> `TestQPS`.
-2. For goleak failures, prefer package identity from `FAIL <package> <duration>`.
-Title should be package-oriented (for example: `GOLEAK detected in github.com/tikv/pd/client package tests`).
+1. Open the raw log from the CI link.
+2. Search the exact test or package first.
+3. Treat `--- FAIL:` suite summaries as navigation only.
+4. Locate the strongest failure block in the raw log.
+5. Classify the block by excerpt shape, not by signature alone.
+6. If no strong block exists, emit the item to `unknown[]` and do not draft an issue.
 
-## Length Buckets by Failure Type
-| Failure type | Recommended lines | Must include | Must remove |
-|---|---:|---|---|
-| timeout | 3-8 | `panic: test timed out`, `running tests`, test name | unrelated goroutine dump |
-| assertion / condition | 5-12 | `Error:` + `Test:` line | repetitive `Error Trace` fan-out |
-| panic | 8-20 | panic headline + 1-4 top frames + target clue | full goroutine census |
-| data race | 12-30 | `WARNING: DATA RACE` + first read/write pair + target frame | repeated middleware / framework frames |
-| deadlock | 12-28 | `POTENTIAL DEADLOCK` + lock holder/waiter + target frame | full lock inventory |
-| goleak | 6-16 | goleak headline + first goroutine frame + `FAIL <package>` | timestamp prefixes on every line |
+## Failure Families
+
+### 1. Assertion / Condition
+
+Use when the log contains a strong assertion block.
+
+Keep:
+- `=== NAME` or `=== RUN` when it identifies the target test
+- the source `file:line` line
+- the full `Error Trace`
+- `Error:`
+- `Test:`
+
+Do not keep:
+- unrelated INFO/WARN lines before or after the block
+- trailing suite summary lines
+
+Typical size:
+- 5 to 20 non-empty lines
+
+### 2. Timeout-Only
+
+Use when there is no stronger assertion block for the same test.
+
+Keep:
+- `panic: test timed out after ...`
+- `running tests:`
+- the exact test line
+- the first target frame that points into PD source
+
+Do not keep:
+- full goroutine census
+- generic runtime frames beyond the first useful target frame
+
+Typical size:
+- 4 to 12 non-empty lines
+
+### 3. Goleak / Package
+
+Use package identity, not test identity.
+
+Keep:
+- `goleak: Errors on successful test run: found unexpected goroutines:`
+- the full unexpected goroutines block
+- the package fail line `FAIL github.com/...`
+
+Do not keep:
+- unrelated package pass lines after the failing package
+- build trailer noise such as `make: ***`
+
+Typical size:
+- 8 to 220 non-empty lines
+
+Important:
+- This is a full-block exception. Do not reduce it to one goroutine.
+
+### 4. Panic / Package
+
+Use package identity when the panic is package-scoped.
+
+Keep:
+- the panic headline (`panic:` or `[panic]`)
+- `recover=...` when present
+- the embedded or following stack
+- `FAIL github.com/...`
+
+Do not keep:
+- unrelated service shutdown logs
+- generic package pass lines after the fail line
+
+Typical size:
+- 2 to 40 non-empty lines
+
+### 5. Deadlock
+
+Keep:
+- the assertion header if present (`Error Trace`, `Error`, `Test`)
+- `POTENTIAL DEADLOCK:`
+- `Previous place where the lock was grabbed`
+- `Have been trying to lock it again for more than 30s`
+- `Here is what goroutine ... doing now`
+- `Other goroutines holding locks`
+
+Do not keep:
+- trailing coverage or make output
+
+Typical size:
+- 12 to 140 non-empty lines
+
+Important:
+- This is also a full-block exception. Preserve the lock relationship report.
+
+### 6. Data Race / Test
+
+Keep:
+- a test clue (`=== RUN`, `=== NAME`, or `--- FAIL`)
+- `WARNING: DATA RACE`
+- `Read at`
+- `Previous write at`
+- both `Goroutine ... created at` sections
+
+Do not keep:
+- long middleware tails after the race report ends
+
+Typical size:
+- 12 to 120 non-empty lines
+
+### 7. Unknown Fallback
+
+This is not an excerpt family. It is a stop condition.
+
+If only suite summary lines are available:
+- use them to locate the failing subtest
+- search the raw log again with the exact test name
+- if no stronger block exists, emit to `unknown[]`
+
+Never:
+- create a GitHub issue action from an unknown case
+- paste a suite summary as the final issue excerpt
 
 ## Noise Filters
-Drop lines matching these classes unless they are the only evidence:
-- CI timestamp prefix only (`YYYY-MM-DDTHH:MM:SS...Z`)
-- dependency download lines (`go: downloading ...`)
-- lifecycle/info spam (`run all tasks takes`, progress bars, pass-only lines)
-- repeated stack frames from generic libraries (`gin`, `grpc`, `testing`) after first 1-2 frames
 
-## Candidate Window Scoring
-Given a log, build candidate windows around learned feature clusters and score:
-1. target hit score: test/package exact hit > root test hit > leaf token hit
-2. evidence strength: panic/data-race/deadlock/goleak/assertion key lines
-3. noise penalty: timestamp-only ratio, framework-frame ratio, repeated lines
-4. compactness reward: shortest window that still keeps target + trigger + one context frame
+Drop these unless they are part of the failure block itself:
 
-Pick highest score; then enforce bucket line cap.
+- timestamp-only prefixes
+- `go: downloading ...`
+- lifecycle INFO/WARN spam
+- `coverage:`
+- `run all tasks takes`
+- `make: ***`
+- copied triage summaries such as `type=...; signatures=...`
 
-## Good vs Bad Patterns
-Good:
-- test/package identity and failure trigger appear in first 3-5 lines
-- excerpt is self-contained without scrolling multiple pages
+## Scoring Rule
 
-Bad:
-- excerpt moved to `CI link`/`Reason` sections instead of `Which jobs are failing`
-- 100+ line dumps where signal is diluted by middleware or repeated stack frames
-- missing target identity (no `Test:` or package `FAIL` line)
+When multiple candidate windows exist, prefer the window that maximizes:
 
-## Typical Good Skeletons
-Timeout:
-```text
-panic: test timed out after 5m0s
-running tests:
-  TestXxx (5m0s)
-```
+1. exact test or package identity
+2. strongest failure signal
+3. actionable trace depth
+4. lowest surrounding noise
 
-Condition never satisfied:
-```text
-Error: Condition never satisfied
-Test:  TestXxx
-```
+## Validation Contract
 
-Goleak package:
-```text
-goleak: Errors on successful test run: found unexpected goroutines:
-...top goroutine frame...
-FAIL github.com/tikv/pd/<pkg> 11.642s
-```
+The validator enforces:
+
+- code block exists and is non-empty
+- test or package clue exists
+- at least one error anchor exists
+- summary-template lines are rejected
+- line budget matches the selected failure family

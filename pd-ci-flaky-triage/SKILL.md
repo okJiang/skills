@@ -5,7 +5,18 @@ description: Use when asked to triage recent tikv/pd CI failures and produce fla
 
 # PD CI Flaky Triage
 
-Run deterministic flaky triage for recent PD CI failures, then let the agent generate concise failure snippets and execute issue actions.
+Run deterministic flaky triage for recent PD CI failures, then let the agent generate failure snippets from CI logs.
+
+## Hard Rules
+
+1. Never use `debug_only_evidence_summary` as `### Which jobs are failing`.
+2. Every create/comment/reopen action must fetch raw CI logs from `links` or `new_links`.
+3. `UNKNOWN_FAILURE` never becomes a GitHub action.
+4. Unknown cases must be emitted under output JSON `unknown[]` only.
+5. Run `validate_flaky_snippets.py` before any output or GitHub write operation.
+6. If one action fails extraction or validation, stop the whole run immediately.
+7. Memory path is fixed to `/Users/jiangxianjie/.codex/automations/flaky-reporter/memory.md`.
+8. Memory is run history only. It must not influence snippet selection.
 
 ## Workflow
 
@@ -15,7 +26,7 @@ Run deterministic flaky triage for recent PD CI failures, then let the agent gen
 gh auth status
 ```
 
-2. Run the triage script (read-only analysis, no GitHub write operations).
+2. Run the triage script.
 
 ```bash
 python3 scripts/triage_pd_ci_flaky.py \
@@ -30,58 +41,91 @@ python3 scripts/triage_pd_ci_flaky.py \
   --out-json /tmp/pd_ci_flaky_triage.json
 ```
 
-3. Read action payload.
+3. Read triage payload.
 
 ```bash
-jq '{window, counts}' /tmp/pd_ci_flaky_triage.json
+jq '{window, counts, unknown}' /tmp/pd_ci_flaky_triage.json
 ```
 
-4. For each `create[]` item, agent must:
-- fetch CI log from `links` (prefer first link as primary evidence)
-- generate a concise excerpt for `### Which jobs are failing` using references below
-- compose issue body and create issue with `labels`
+4. Build snippets from logs for action items only.
+- `create[]`: fetch from `links`
+- `comment[]` and `reopen_and_comment[]`: fetch from `new_links`
+- `unknown[]`: report only; never draft issue/comment text
 
-5. For each `comment[]` item, agent posts a follow-up comment with new CI links and compact evidence summary.
+5. Generate snippets using the family rules in:
+- `references/stack_snippet_guidelines.md`
+- `references/stack_snippet_examples.jsonl`
+- `references/heuristics.md`
 
-6. For each `reopen_and_comment[]` item, agent reopens issue first, then comments.
+6. Validate the draft.
 
-## Body Format (Agent)
+```bash
+python3 /Users/jiangxianjie/.codex/skills/pd-ci-flaky-triage/scripts/validate_flaky_snippets.py \
+  --input /tmp/pd_ci_flaky_report_draft.md \
+  --trace-out /tmp/pd_ci_flaky_trace.json \
+  --error-report-out /tmp/pd_ci_flaky_validation_errors.json
+```
 
-Issue body should use this structure:
+7. Only after validation passes:
+- compose final create/comment/reopen bodies
+- if the task requires GitHub writes, execute them
+
+## Failure Families
+
+Use the final excerpt shape, not the raw signature, to classify the failure.
+
+1. `assertion / condition`
+- Keep the full `Error Trace` + `Error` + `Test` block.
+- If `panic: test timed out` appears later but an assertion block already exists, use the assertion block.
+
+2. `timeout-only`
+- Use `panic: test timed out` + `running tests:` + the target test frame.
+
+3. `goleak / package`
+- Keep the full `goleak: Errors on successful test run: found unexpected goroutines:` block.
+- End at `FAIL <package>`.
+
+4. `panic / package`
+- Keep the panic headline, embedded stack, and `FAIL <package>`.
+
+5. `deadlock`
+- Keep the assertion header and the full deadlock report.
+
+6. `data race / test`
+- Keep a test clue plus the full data race block (`Read at`, `Previous write at`, `created at`).
+
+7. `unknown fallback`
+- `suite summary` is only a navigation clue.
+- If only `--- FAIL: Suite/Subtest` is visible, search the raw log for the stronger failure block.
+- If no stronger block exists, emit to `unknown[]` and stop there.
+
+## Manual Investigation Order
+
+1. Open the raw CI log.
+2. Search for the exact test or package first.
+3. Treat `--- FAIL:` summary lines as navigation, not final snippet start.
+4. Pick the family whose excerpt best supports debugging.
+5. If the family is still unknown after scanning the full log, report it in `unknown[]` and do not draft an issue.
+
+## Body Format
+
+Use this only for `create[]`, `comment[]`, and `reopen_and_comment[]`.
+
 - `## Flaky Test`
 - `### Which jobs are failing`
-  - fenced code block with concise failure excerpt
-- `### CI link`
-  - one URL per line
+  - fenced code block with the selected excerpt
+- `### CI link` or `### New CI link`
 - `### Reason for failure (if possible)`
-  - keep empty unless human investigation adds context
+  - leave empty unless a human adds analysis
 - `### Anything else`
-  - optional short metadata (signatures/evidence summary)
+  - optional short metadata
 
 Do not use `### Stack excerpt`.
-
-## Snippet Generation Rules (Agent)
-
-1. Learn retrieval features from references, not a fixed hardcoded anchor list.
-2. Score candidate windows by:
-- test/package hit
-- error/assertion strength
-- noise ratio
-- duplicate frame ratio
-3. Enforce failure-type line budget from guidelines.
-4. Collapse parameterized subtests to root test name when needed.
-5. For goleak, prefer package-oriented target using `FAIL <package>`.
-
-## Decision Rules (Script)
-
-- flaky if matching flaky issue already exists
-- flaky if reproduced across multiple PRs
-- flaky if same SHA shows fail/pass flapping
-- otherwise likely regression / insufficient flaky evidence
 
 ## Resources
 
 - Script: `scripts/triage_pd_ci_flaky.py`
+- Validator: `scripts/validate_flaky_snippets.py`
 - Heuristics: `references/heuristics.md`
 - Snippet guidelines: `references/stack_snippet_guidelines.md`
 - Snippet examples: `references/stack_snippet_examples.jsonl`

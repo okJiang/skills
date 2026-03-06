@@ -109,6 +109,20 @@ class CommentAction:
 
 
 @dataclasses.dataclass
+class UnknownAction:
+    key: str
+    test_name: str | None
+    package_name: str | None
+    links: list[str]
+    ci_names: list[str]
+    signatures: list[str]
+    evidence_summary: str
+    reason: str
+    existing_issue_number: int | None
+    existing_issue_url: str | None
+
+
+@dataclasses.dataclass
 class DownloadedLog:
     record: FailureRecord
     path: Path
@@ -1377,6 +1391,54 @@ def parse_label_list(raw: str) -> list[str]:
     return labels
 
 
+def signatures_are_unknown(signatures: list[str]) -> bool:
+    return not signatures or all(sig == "UNKNOWN_FAILURE" for sig in signatures)
+
+
+def build_unknown_actions(
+    grouped: dict[str, list[ParsedFailure]],
+    records_by_id: dict[str, FailureRecord],
+    decisions: list[FlakyDecision],
+    issue_matches: dict[str, dict[str, Any] | None],
+    signatures_by_key: dict[str, list[str]],
+) -> list[UnknownAction]:
+    unknown_actions: list[UnknownAction] = []
+
+    for decision in decisions:
+        entries = grouped.get(decision.key, [])
+        if not entries:
+            continue
+
+        signatures = signatures_by_key.get(decision.key, ["UNKNOWN_FAILURE"])
+        if not signatures_are_unknown(signatures):
+            continue
+
+        records = [records_by_id[e.record_id] for e in entries if e.record_id in records_by_id]
+        links = sorted({r.ci_url for r in records if r.ci_url})
+        ci_names = sorted({r.ci_name for r in records if r.ci_name})
+        lead = entries[0]
+        matched_issue = issue_matches.get(decision.key)
+        issue_number_raw = matched_issue.get("number") if matched_issue else None
+        issue_number = int(issue_number_raw) if issue_number_raw is not None else None
+
+        unknown_actions.append(
+            UnknownAction(
+                key=decision.key,
+                test_name=lead.test_name,
+                package_name=lead.primary_package,
+                links=links,
+                ci_names=ci_names,
+                signatures=signatures,
+                evidence_summary=lead.evidence_summary,
+                reason=decision.reason,
+                existing_issue_number=issue_number,
+                existing_issue_url=matched_issue.get("url") if matched_issue else None,
+            )
+        )
+
+    return unknown_actions
+
+
 def build_issue_actions(
     args: argparse.Namespace,
     grouped: dict[str, list[ParsedFailure]],
@@ -1406,6 +1468,8 @@ def build_issue_actions(
             continue
         ci_names = sorted({r.ci_name for r in records if r.ci_name})
         signatures = signatures_by_key.get(key, ["UNKNOWN_FAILURE"])
+        if signatures_are_unknown(signatures):
+            continue
         evidence_summary = entries[0].evidence_summary
         package_name = entries[0].primary_package
         test_name = entries[0].test_name
@@ -1490,6 +1554,7 @@ def to_action_payload(
     create_actions: list[CreateAction],
     comment_actions: list[CommentAction],
     reopen_actions: list[CommentAction],
+    unknown_actions: list[UnknownAction],
 ) -> dict[str, Any]:
     return {
         "window": {
@@ -1504,6 +1569,7 @@ def to_action_payload(
             "create": len(create_actions),
             "comment": len(comment_actions),
             "reopen_and_comment": len(reopen_actions),
+            "unknown": len(unknown_actions),
         },
         "create": [
             {
@@ -1515,7 +1581,7 @@ def to_action_payload(
                 "links": item.links,
                 "ci_names": item.ci_names,
                 "signatures": item.signatures,
-                "evidence_summary": item.evidence_summary,
+                "debug_only_evidence_summary": item.evidence_summary,
             }
             for item in create_actions
         ],
@@ -1529,7 +1595,7 @@ def to_action_payload(
                 "new_links": item.new_links,
                 "ci_names": item.ci_names,
                 "signatures": item.signatures,
-                "evidence_summary": item.evidence_summary,
+                "debug_only_evidence_summary": item.evidence_summary,
             }
             for item in comment_actions
         ],
@@ -1543,9 +1609,24 @@ def to_action_payload(
                 "new_links": item.new_links,
                 "ci_names": item.ci_names,
                 "signatures": item.signatures,
-                "evidence_summary": item.evidence_summary,
+                "debug_only_evidence_summary": item.evidence_summary,
             }
             for item in reopen_actions
+        ],
+        "unknown": [
+            {
+                "key": item.key,
+                "test_name": item.test_name,
+                "package": item.package_name,
+                "links": item.links,
+                "ci_names": item.ci_names,
+                "signatures": item.signatures,
+                "debug_only_evidence_summary": item.evidence_summary,
+                "decision_reason": item.reason,
+                "existing_issue_number": item.existing_issue_number,
+                "existing_issue_url": item.existing_issue_url,
+            }
+            for item in unknown_actions
         ],
     }
 
@@ -1569,6 +1650,7 @@ def build_output(
     create_actions: list[CreateAction],
     comment_actions: list[CommentAction],
     reopen_actions: list[CommentAction],
+    unknown_actions: list[UnknownAction],
     records_by_id: dict[str, FailureRecord],
 ) -> None:
     print("Scanned window")
@@ -1616,6 +1698,18 @@ def build_output(
         for item in reopen_actions:
             print(f"- reopen+comment: {item.key}; issue={item.issue_number}; new_links={len(item.new_links)}")
 
+    print("\nUnknown results (no issue action)")
+    if not unknown_actions:
+        print("- none")
+    else:
+        for item in unknown_actions:
+            target = item.test_name or (f"package:{item.package_name}" if item.package_name else item.key)
+            issue_number = item.existing_issue_number or "none"
+            print(
+                f"- {target}; signatures={','.join(item.signatures)}; "
+                f"reason={item.reason}; issue={issue_number}; links={len(item.links)}"
+            )
+
     print("\nSkipped/Unknown")
     skipped = list(summary.skipped_unknown)
     if summary.command_failed_after_retries:
@@ -1646,6 +1740,7 @@ def main() -> int:
             create_actions=[],
             comment_actions=[],
             reopen_actions=[],
+            unknown_actions=[],
             records_by_id={},
         )
         return 1
@@ -1705,6 +1800,13 @@ def main() -> int:
     log_progress(f"flaky decisions computed: total={len(decisions)} flaky={sum(1 for d in decisions if d.is_flaky)}")
 
     summary.flaky_true = sum(1 for d in decisions if d.is_flaky)
+    unknown_actions = build_unknown_actions(
+        grouped=grouped,
+        records_by_id=records_by_id,
+        decisions=decisions,
+        issue_matches=issue_matches,
+        signatures_by_key=signatures_by_key,
+    )
 
     create_actions, comment_actions, reopen_actions = build_issue_actions(
         args=args,
@@ -1728,6 +1830,7 @@ def main() -> int:
         create_actions=create_actions,
         comment_actions=comment_actions,
         reopen_actions=reopen_actions,
+        unknown_actions=unknown_actions,
         records_by_id=records_by_id,
     )
 
@@ -1737,6 +1840,7 @@ def main() -> int:
             create_actions=create_actions,
             comment_actions=comment_actions,
             reopen_actions=reopen_actions,
+            unknown_actions=unknown_actions,
         )
         with open(args.out_json, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, sort_keys=True)

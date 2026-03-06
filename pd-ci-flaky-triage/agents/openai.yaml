@@ -1,4 +1,4 @@
 interface:
   display_name: "PD CI Flaky Triage"
   short_description: "Triage recent PD CI flaky failures"
-  default_prompt: "Use $pd-ci-flaky-triage to scan recent failed PD tests and update flaky issues."
+  default_prompt: "Use $pd-ci-flaky-triage to scan recent failed PD tests. Generate `Which jobs are failing` snippets from raw CI logs by failure family, run validator fail-closed, never use debug-only summaries as snippet content, and keep UNKNOWN_FAILURE items in `unknown[]` instead of drafting issue actions."

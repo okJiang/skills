@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import io
 import pathlib
@@ -186,14 +187,125 @@ FAIL\tgithub.com/tikv/pd/client\t8.624s
             create_actions=[create],
             comment_actions=[comment],
             reopen_actions=[comment],
+            unknown_actions=[],
         )
 
-        self.assertEqual({"window", "counts", "create", "comment", "reopen_and_comment"}, set(payload.keys()))
+        self.assertEqual(
+            {"window", "counts", "create", "comment", "reopen_and_comment", "unknown"},
+            set(payload.keys()),
+        )
         self.assertEqual(1, payload["counts"]["create"])
         self.assertEqual(1, payload["counts"]["comment"])
         self.assertEqual(1, payload["counts"]["reopen_and_comment"])
+        self.assertEqual(0, payload["counts"]["unknown"])
         self.assertNotIn("body", payload["create"][0])
         self.assertNotIn("comment_body", payload["comment"][0])
+        self.assertIn("debug_only_evidence_summary", payload["create"][0])
+        self.assertIn("debug_only_evidence_summary", payload["comment"][0])
+        self.assertIn("debug_only_evidence_summary", payload["reopen_and_comment"][0])
+        self.assertNotIn("evidence_summary", payload["create"][0])
+        self.assertNotIn("evidence_summary", payload["comment"][0])
+        self.assertNotIn("evidence_summary", payload["reopen_and_comment"][0])
+        self.assertEqual([], payload["unknown"])
+
+    def test_unknown_failures_are_emitted_separately_and_not_as_issue_actions(self) -> None:
+        record = make_record("unknown-1")
+        record = MODULE.FailureRecord(
+            record_id=record.record_id,
+            source=record.source,
+            ci_name="pull-unit-test-next-gen-3",
+            ci_url="https://example.invalid/ci/unknown-1",
+            log_url=record.log_url,
+            occurred_at=record.occurred_at,
+            pr_number=101,
+            commit_sha=record.commit_sha,
+            run_id=record.run_id,
+            job_id=record.job_id,
+            status=record.status,
+        )
+        parsed = MODULE.ParsedFailure(
+            record_id=record.record_id,
+            key="signature::unknown_failure",
+            test_name=None,
+            signatures=["UNKNOWN_FAILURE"],
+            evidence_lines=["--- FAIL: TestUnknown (1.00s)"],
+            tests=[],
+            primary_test=None,
+            failure_type="unknown",
+            evidence_summary="type=unknown; test=N/A; signatures=UNKNOWN_FAILURE",
+            confidence=0.35,
+            primary_package=None,
+            failed_packages=[],
+        )
+        decision = MODULE.FlakyDecision(
+            key=parsed.key,
+            test_name=None,
+            is_flaky=True,
+            reason="existing_flaky_issue",
+            distinct_pr_count=2,
+            distinct_sha_count=2,
+            has_existing_issue=True,
+            existing_issue_number=1234,
+            confidence=0.35,
+            action_reason="matched_existing_issue",
+        )
+        grouped = {parsed.key: [parsed]}
+        records_by_id = {record.record_id: record}
+        signatures_by_key = {parsed.key: ["UNKNOWN_FAILURE"]}
+        issue_matches = {
+            parsed.key: {
+                "number": 1234,
+                "url": "https://github.com/tikv/pd/issues/1234",
+            }
+        }
+        args = argparse.Namespace(
+            issue_labels="type/ci",
+            repo="tikv/pd",
+            reopen_closed=True,
+            retry_count=1,
+        )
+        summary = MODULE.RunSummary(
+            scanned_window_start="2026-03-04T00:00:00+00:00",
+            scanned_window_end="2026-03-05T00:00:00+00:00",
+        )
+
+        create_actions, comment_actions, reopen_actions = MODULE.build_issue_actions(
+            args=args,
+            grouped=grouped,
+            records_by_id=records_by_id,
+            decisions=[decision],
+            issue_matches=issue_matches,
+            signatures_by_key=signatures_by_key,
+            summary=summary,
+        )
+        self.assertEqual([], create_actions)
+        self.assertEqual([], comment_actions)
+        self.assertEqual([], reopen_actions)
+
+        unknown_actions = MODULE.build_unknown_actions(
+            grouped=grouped,
+            records_by_id=records_by_id,
+            decisions=[decision],
+            issue_matches=issue_matches,
+            signatures_by_key=signatures_by_key,
+        )
+        self.assertEqual(1, len(unknown_actions))
+        self.assertEqual("https://example.invalid/ci/unknown-1", unknown_actions[0].links[0])
+        self.assertEqual(1234, unknown_actions[0].existing_issue_number)
+
+        payload = MODULE.to_action_payload(
+            summary=summary,
+            create_actions=create_actions,
+            comment_actions=comment_actions,
+            reopen_actions=reopen_actions,
+            unknown_actions=unknown_actions,
+        )
+        self.assertEqual(1, payload["counts"]["unknown"])
+        self.assertEqual([], payload["create"])
+        self.assertEqual([], payload["comment"])
+        self.assertEqual([], payload["reopen_and_comment"])
+        self.assertEqual("signature::unknown_failure", payload["unknown"][0]["key"])
+        self.assertEqual("existing_flaky_issue", payload["unknown"][0]["decision_reason"])
 
     def test_script_has_no_gh_write_issue_ops(self) -> None:
         self.assertIsNone(re.search(r"['\"]issue['\"]\s*,\s*['\"]create['\"]", SOURCE_TEXT))
