@@ -1,0 +1,4 @@
+interface:
+  display_name: "PD Submit Skill PR"
+  short_description: "Upstream local skills into tikv/pd as pull requests"
+  default_prompt: "Use $pd-submit-skill-pr to upstream this local skill into tikv/pd."
