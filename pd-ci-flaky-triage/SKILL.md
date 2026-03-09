@@ -7,6 +7,12 @@ description: Use when asked to triage recent tikv/pd CI failures and produce fla
 
 Run deterministic flaky triage for recent PD CI failures, then let the agent generate failure snippets from CI logs.
 
+Fixed script behavior:
+- scope is always `pr+push`
+- flaky policy is fixed to the current evidence-first implementation
+- closed matching issues are always reopened before commenting
+- log processing always uses the current parallel pipeline
+
 ## Hard Rules
 
 1. Never use `debug_only_evidence_summary` as `### Which jobs are failing`.
@@ -32,10 +38,6 @@ gh auth status
 python3 scripts/triage_pd_ci_flaky.py \
   --repo tikv/pd \
   --days 1 \
-  --scope pr+push \
-  --ci-scope test-all \
-  --flaky-policy evidence-first \
-  --reopen-closed true \
   --agent-max-log-bytes 8388608 \
   --issue-labels "type/ci" \
   --out-json /tmp/pd_ci_flaky_triage.json

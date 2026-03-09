@@ -22,6 +22,8 @@ from typing import Any
 
 UTC = dt.timezone.utc
 PROGRESS_ENV = "PD_CI_FLAKY_PROGRESS"
+FIXED_SCOPE = "pr+push"
+FIXED_ACTION_EVENTS = {"pull_request", "push"}
 
 
 @dataclasses.dataclass
@@ -134,15 +136,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--repo", default="tikv/pd")
     parser.add_argument("--days", type=int, default=7)
-    parser.add_argument("--scope", choices=["pr+push", "pr", "push"], default="pr+push")
-    parser.add_argument("--ci-scope", choices=["test-all"], default="test-all")
-    parser.add_argument("--flaky-policy", choices=["evidence-first"], default="evidence-first")
-    parser.add_argument("--reopen-closed", type=parse_bool, default=True)
     parser.add_argument("--out-json", default="")
     parser.add_argument("--max-prow-pages", type=int, default=30)
     parser.add_argument("--max-action-runs", type=int, default=500)
     parser.add_argument("--retry-count", type=int, default=3)
-    parser.add_argument("--pipeline-mode", choices=["parallel", "serial"], default="parallel")
     parser.add_argument("--download-workers", type=int, default=8)
     parser.add_argument("--parse-workers", type=int, default=0)
     parser.add_argument("--log-spool-dir", default="")
@@ -763,21 +760,9 @@ def collect_prow_failures(
     return failures, outcomes_by_ci_sha
 
 
-def scope_allows_event(scope: str, event: str) -> bool:
-    event = (event or "").lower()
-    if scope == "pr+push":
-        return event in {"pull_request", "push"}
-    if scope == "pr":
-        return event == "pull_request"
-    if scope == "push":
-        return event == "push"
-    return False
-
-
 def collect_actions_failures(
     repo: str,
     since: dt.datetime,
-    scope: str,
     max_runs: int,
     summary: RunSummary,
     retries: int,
@@ -809,7 +794,7 @@ def collect_actions_failures(
         if created_at < since:
             continue
         event = run.get("event", "")
-        if not scope_allows_event(scope, event):
+        if (event or "").lower() not in FIXED_ACTION_EVENTS:
             continue
         run_name = run.get("name", "")
         run_id = str(run.get("databaseId", ""))
@@ -951,36 +936,6 @@ def parse_log_file(item: DownloadedLog, args: argparse.Namespace) -> list[Parsed
     )
 
 
-def process_logs_serial(
-    args: argparse.Namespace,
-    records: list[FailureRecord],
-    summary: RunSummary,
-    spool_dir: Path,
-) -> list[ParsedFailure]:
-    parsed: list[ParsedFailure] = []
-    total = len(records)
-    for idx, record in enumerate(records, start=1):
-        item, err = fetch_and_spool_log(
-            record=record,
-            repo=args.repo,
-            summary=summary,
-            retries=args.retry_count,
-            spool_dir=spool_dir,
-        )
-        if err:
-            summary.skipped_unknown.append(f"log_download_failed:{record.record_id}:{err}")
-            continue
-
-        try:
-            parsed.extend(parse_log_file(item, args=args))
-        except Exception as exc:  # noqa: BLE001
-            summary.skipped_unknown.append(f"log_parse_failed:{record.record_id}:{exc}")
-
-        if idx % 10 == 0 or idx == total:
-            log_progress(f"log parsing progress: {idx}/{total} records, parsed_failures={len(parsed)}")
-    return parsed
-
-
 def process_logs_parallel(
     args: argparse.Namespace,
     records: list[FailureRecord],
@@ -1093,10 +1048,7 @@ def process_logs(
     summary.log_spool_dir = str(spool_dir)
     log_progress(f"log spool dir prepared: {spool_dir}")
     try:
-        if args.pipeline_mode == "serial":
-            parsed = process_logs_serial(args=args, records=records, summary=summary, spool_dir=spool_dir)
-        else:
-            parsed = process_logs_parallel(args=args, records=records, summary=summary, spool_dir=spool_dir)
+        parsed = process_logs_parallel(args=args, records=records, summary=summary, spool_dir=spool_dir)
     finally:
         if args.keep_logs:
             log_progress(f"log spool dir retained: {spool_dir}")
@@ -1114,26 +1066,20 @@ def fetch_ci_records(
     since: dt.datetime,
     summary: RunSummary,
 ) -> tuple[list[FailureRecord], dict[str, set[str]]]:
-    prow_failures: list[FailureRecord] = []
-    outcomes: dict[str, set[str]] = {}
-    if args.scope in {"pr+push", "push"}:
-        log_progress(f"collecting prow failures (max_pages={args.max_prow_pages})")
-        prow_failures, outcomes = collect_prow_failures(
-            repo=args.repo,
-            since=since,
-            max_pages=args.max_prow_pages,
-            summary=summary,
-            retries=args.retry_count,
-        )
-        log_progress(f"prow collection done: failures={len(prow_failures)}")
-    else:
-        log_progress("skip prow collection due to scope=pr")
+    log_progress(f"collecting prow failures (max_pages={args.max_prow_pages})")
+    prow_failures, outcomes = collect_prow_failures(
+        repo=args.repo,
+        since=since,
+        max_pages=args.max_prow_pages,
+        summary=summary,
+        retries=args.retry_count,
+    )
+    log_progress(f"prow collection done: failures={len(prow_failures)}")
 
     log_progress(f"collecting github actions failures (max_runs={args.max_action_runs})")
     actions_failures = collect_actions_failures(
         repo=args.repo,
         since=since,
-        scope=args.scope,
         max_runs=args.max_action_runs,
         summary=summary,
         retries=args.retry_count,
@@ -1523,7 +1469,7 @@ def build_issue_actions(
                 signatures=signatures,
                 evidence_summary=evidence_summary,
             )
-            if state == "closed" and args.reopen_closed:
+            if state == "closed":
                 reopen_actions.append(action)
             else:
                 comment_actions.append(action)
@@ -1657,9 +1603,7 @@ def build_output(
     print(f"- repo: {args.repo}")
     print(f"- since: {summary.scanned_window_start}")
     print(f"- until: {summary.scanned_window_end}")
-    print(f"- scope: {args.scope}")
-    print(f"- ci-scope: {args.ci_scope}")
-    print(f"- pipeline-mode: {args.pipeline_mode}")
+    print(f"- scope: {FIXED_SCOPE}")
     print(f"- failures from prow: {summary.prow_records}")
     print(f"- failures from actions: {summary.actions_records}")
     if args.keep_logs and summary.log_spool_dir:
@@ -1727,7 +1671,7 @@ def main() -> int:
     start = end - dt.timedelta(days=args.days)
     summary = RunSummary(scanned_window_start=start.isoformat(), scanned_window_end=end.isoformat())
     log_progress(
-        f"triage started repo={args.repo} days={args.days} scope={args.scope} "
+        f"triage started repo={args.repo} days={args.days} scope={FIXED_SCOPE} "
         f"(disable with {PROGRESS_ENV}=0)"
     )
 

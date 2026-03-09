@@ -312,11 +312,110 @@ FAIL\tgithub.com/tikv/pd/client\t8.624s
         self.assertIsNone(re.search(r"['\"]issue['\"]\s*,\s*['\"]comment['\"]", SOURCE_TEXT))
         self.assertIsNone(re.search(r"['\"]issue['\"]\s*,\s*['\"]reopen['\"]", SOURCE_TEXT))
 
-    def test_parse_args_rejects_removed_execution_mode_flag(self) -> None:
-        with mock.patch.object(sys, "argv", ["triage_pd_ci_flaky.py", "--mode", "auto"]):
-            with redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit):
-                    MODULE.parse_args()
+    def test_parse_args_defaults_use_only_supported_surface(self) -> None:
+        with mock.patch.object(sys, "argv", ["triage_pd_ci_flaky.py"]):
+            args = MODULE.parse_args()
+
+        self.assertEqual("tikv/pd", args.repo)
+        self.assertEqual(7, args.days)
+        self.assertFalse(hasattr(args, "scope"))
+        self.assertFalse(hasattr(args, "ci_scope"))
+        self.assertFalse(hasattr(args, "flaky_policy"))
+        self.assertFalse(hasattr(args, "reopen_closed"))
+        self.assertFalse(hasattr(args, "pipeline_mode"))
+
+    def test_parse_args_rejects_removed_flags(self) -> None:
+        removed_flags = [
+            ["--mode", "auto"],
+            ["--scope", "pr+push"],
+            ["--ci-scope", "test-all"],
+            ["--flaky-policy", "evidence-first"],
+            ["--reopen-closed", "true"],
+            ["--pipeline-mode", "parallel"],
+        ]
+
+        for argv_suffix in removed_flags:
+            with self.subTest(flag=argv_suffix[0]):
+                with mock.patch.object(sys, "argv", ["triage_pd_ci_flaky.py", *argv_suffix]):
+                    with redirect_stderr(io.StringIO()):
+                        with self.assertRaises(SystemExit):
+                            MODULE.parse_args()
+
+    def test_build_issue_actions_reopens_closed_issue_without_cli_toggle(self) -> None:
+        record = MODULE.FailureRecord(
+            record_id="closed-1",
+            source="actions",
+            ci_name="PD Test / unit",
+            ci_url="https://example.invalid/ci/closed-1",
+            log_url=None,
+            occurred_at="2026-03-04T00:00:00Z",
+            pr_number=102,
+            commit_sha="def",
+            run_id="22",
+            job_id=33,
+            status="FAILURE",
+        )
+        parsed = MODULE.ParsedFailure(
+            record_id=record.record_id,
+            key="test::testfoo",
+            test_name="TestFoo",
+            signatures=["PANIC"],
+            evidence_lines=["panic: boom"],
+            tests=["TestFoo"],
+            primary_test="TestFoo",
+            failure_type="panic",
+            evidence_summary="type=panic; test=TestFoo",
+            confidence=0.91,
+            primary_package=None,
+            failed_packages=[],
+        )
+        decision = MODULE.FlakyDecision(
+            key=parsed.key,
+            test_name="TestFoo",
+            is_flaky=True,
+            reason="existing_flaky_issue",
+            distinct_pr_count=2,
+            distinct_sha_count=2,
+            has_existing_issue=True,
+            existing_issue_number=88,
+            confidence=0.91,
+            action_reason="matched_existing_issue",
+        )
+        args = argparse.Namespace(
+            issue_labels="type/ci",
+            repo="tikv/pd",
+            retry_count=1,
+        )
+        summary = MODULE.RunSummary(
+            scanned_window_start="2026-03-04T00:00:00+00:00",
+            scanned_window_end="2026-03-05T00:00:00+00:00",
+        )
+
+        with mock.patch.object(
+            MODULE,
+            "run_gh_json",
+            return_value={"body": "", "comments": []},
+        ):
+            create_actions, comment_actions, reopen_actions = MODULE.build_issue_actions(
+                args=args,
+                grouped={parsed.key: [parsed]},
+                records_by_id={record.record_id: record},
+                decisions=[decision],
+                issue_matches={
+                    parsed.key: {
+                        "number": 88,
+                        "url": "https://github.com/tikv/pd/issues/88",
+                        "state": "closed",
+                    }
+                },
+                signatures_by_key={parsed.key: ["PANIC"]},
+                summary=summary,
+            )
+
+        self.assertEqual([], create_actions)
+        self.assertEqual([], comment_actions)
+        self.assertEqual(1, len(reopen_actions))
+        self.assertEqual(88, reopen_actions[0].issue_number)
 
 
 if __name__ == "__main__":
