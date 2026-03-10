@@ -8,7 +8,6 @@ description: Use when asked to triage recent tikv/pd CI failures and produce fla
 Run deterministic flaky triage for recent PD CI failures, then let the agent generate failure snippets from CI logs.
 
 Fixed script behavior:
-- scope is always `pr+push`
 - flaky policy is fixed to the current evidence-first implementation
 - closed matching issues are always reopened before commenting
 - log processing always uses the current parallel pipeline
