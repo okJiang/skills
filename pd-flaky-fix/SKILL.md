@@ -75,7 +75,7 @@ If corpus/playbook are missing or invalid, continue with root-cause-first flow a
 - Push branch to `origin`.
 - Create draft PR to `tikv/pd:master`.
 - PR body must include (referencing pull request template):
-  - `Issue Number: ref #<issue-number>`
+  - `Issue Number: close #<issue-number>`
   - root-cause evidence chain
   - fix summary and risk
   - verification commands/results
