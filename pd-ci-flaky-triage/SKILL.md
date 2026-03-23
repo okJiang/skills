@@ -16,7 +16,7 @@ Workflow properties:
 ## Hard Rules
 
 1. Never use `debug_only_evidence_summary` as `### Which jobs are failing`.
-2. Every create/comment/reopen action must fetch raw CI logs from `links` or `new_links`.
+2. Every create/comment/reopen action must format `### Which jobs are failing` from the reviewed excerpt data selected in step 3. Re-open raw CI logs only when excerpt confidence is too low or validation fails.
 3. `UNKNOWN_FAILURE` never becomes a GitHub action by itself.
 4. Environment-filtered cases must be emitted under output JSON `env_filtered[]` only and must not become GitHub writes.
 5. Unknown cases must be emitted under output JSON `unknown[]` only.
@@ -74,6 +74,35 @@ Allowed `final_action` values are:
 - `unknown`
 - `drop`
 
+`/tmp/prow_failure_items.json` and `/tmp/actions_failure_items.json` are agent-written artifacts from step 3. Each file must contain:
+
+- top-level `source`, `window`, `counts`, `failure_items`, and `skipped`
+- one `failure_items[]` item per extracted failure item
+- for each failure item:
+  - `candidate_id`
+  - `group_key`
+  - `source`
+  - `source_item_id`
+  - `target.test_name`
+  - `target.package_name`
+  - `signatures`
+  - `evidence_lines`
+  - `debug_only_evidence_summary`
+  - `ci_name`
+  - `ci_url`
+  - `log_ref`
+  - `occurred_at`
+  - `commit_sha`
+  - `status`
+  - `pr_number`
+  - `source_details`
+  - `failure_family`
+  - `excerpt_lines`
+  - `excerpt_start_line`
+  - `excerpt_end_line`
+  - `excerpt_confidence`
+  - `excerpt_reason`
+
 ## Workflow
 
 1. Verify GitHub authentication.
@@ -102,28 +131,37 @@ Intermediate artifact note:
 - `/tmp/prow_failures.json`: intermediate `Prow` failure index with source item ids, CI URLs, log URLs, PR/SHA metadata, and Prow-side outcome context
 - `/tmp/actions_failures.json`: intermediate `GitHub Actions` failure index with workflow/job identity, CI URLs, run/job ids, and SHA metadata
 
-3. Parse raw logs and extract failure items.
+3. Parse raw logs, extract failure items, and select GitHub-facing excerpts.
 
-This step reads the source-specific raw logs and extracts the failure items that later review steps use. Each item keeps the candidate test/package target, signatures, evidence lines, and the source-specific CI context.
+Agent must:
+- read `/tmp/prow_logs.json` and `/tmp/actions_logs.json`
+- delegate the raw-log extraction work to a subagent instead of doing this step in the main agent
+- have the subagent open each `log_ref` file directly, extract the failure items, and choose the excerpt that later becomes `### Which jobs are failing`
+- write `/tmp/prow_failure_items.json` and `/tmp/actions_failure_items.json` from the subagent result
 
-```bash
-python3 /Users/jiangxianjie/.codex/skills/pd-ci-flaky-triage/scripts/build_observations.py \
-  --agent-max-log-bytes 8388608
-```
+Subagent instructions:
+- prefer one subagent per source when both `Prow` and `GitHub Actions` have logs
+- inspect the log file itself, not just the metadata artifact
+- return structured failure items and skipped items, not free-form notes
+- keep source-specific context intact so later steps can still treat `Prow` and `GitHub Actions` separately
+- emit one failure item per defensible failing target; if one CI log contains multiple distinct failing tests, emit multiple failure items
+- if the exact test name is unclear, keep the best package-level or unknown target you can defend, but still preserve signatures and evidence lines
+- use `references/stack_snippet_guidelines.md` and `references/stack_snippet_examples.jsonl` while selecting each excerpt
+- store the chosen excerpt on each failure item as `failure_family`, `excerpt_lines`, `excerpt_start_line`, `excerpt_end_line`, `excerpt_confidence`, and `excerpt_reason`
 
-Outputs:
-- `/tmp/prow_observations.json`: parsed `Prow` observations with candidate ids, targets, signatures, evidence lines, source details, and log refs
-- `/tmp/actions_observations.json`: parsed `GitHub Actions` observations with the same observation shape, but preserving Actions-specific source details
+Stop if:
+- you cannot produce a valid failure item artifact for either source
+- the extracted failure items are too ambiguous to support downstream review
 
 4. Build env review candidates and review them before continuing.
 
 ```bash
 python3 /Users/jiangxianjie/.codex/skills/pd-ci-flaky-triage/scripts/build_env_review_candidates.py \
-  --input-json /tmp/prow_observations.json /tmp/actions_observations.json
+  --input-json /tmp/prow_failure_items.json /tmp/actions_failure_items.json
 ```
 
 Outputs:
-- `/tmp/env_review_candidates.json`: one review item per observation, including candidate id, target, CI link, log ref, signatures, and evidence lines
+- `/tmp/env_review_candidates.json`: one review item per failure item, including candidate id, target, CI link, log ref, signatures, evidence lines, and the stored excerpt fields
 - `/tmp/env_review_decisions.json`: agent-authored keep-or-filter decisions with reasons
 
 Agent must:
@@ -140,7 +178,7 @@ Stop if:
 ```bash
 python3 /Users/jiangxianjie/.codex/skills/pd-ci-flaky-triage/scripts/build_issue_match_candidates.py \
   --repo tikv/pd \
-  --input-json /tmp/prow_observations.json /tmp/actions_observations.json \
+  --input-json /tmp/prow_failure_items.json /tmp/actions_failure_items.json \
   --env-review-payload /tmp/env_review_candidates.json \
   --env-review-decisions /tmp/env_review_decisions.json
 ```
@@ -152,7 +190,7 @@ Outputs:
 
 ```bash
 python3 /Users/jiangxianjie/.codex/skills/pd-ci-flaky-triage/scripts/build_action_review_candidates.py \
-  --input-json /tmp/prow_observations.json /tmp/actions_observations.json \
+  --input-json /tmp/prow_failure_items.json /tmp/actions_failure_items.json \
   --env-review-payload /tmp/env_review_candidates.json \
   --env-review-decisions /tmp/env_review_decisions.json \
   --issue-match-candidates /tmp/issue_match_candidates.json \
@@ -160,7 +198,7 @@ python3 /Users/jiangxianjie/.codex/skills/pd-ci-flaky-triage/scripts/build_actio
 ```
 
 Outputs:
-- `/tmp/action_review_candidates.json`: one grouped candidate per failure key, with links, CI names, signatures, signal summary, issue-match options, and a suggested action
+- `/tmp/action_review_candidates.json`: one grouped candidate per failure key, with links, CI names, signatures, signal summary, issue-match options, stored excerpt candidates, and a suggested action
 - `/tmp/action_review_decisions.json`: agent-authored final decision file that approves, rewrites, downgrades, or drops every action candidate
 
 Agent must:
@@ -184,7 +222,7 @@ python3 /Users/jiangxianjie/.codex/skills/pd-ci-flaky-triage/scripts/assemble_fi
 ```
 
 Outputs:
-- `/tmp/final_triage.json`: the final triage result with counts and the five output buckets consumed by later reporting and GitHub write steps
+- `/tmp/final_triage.json`: the final triage result with counts and the five output buckets consumed by later reporting and GitHub write steps, including stored excerpt candidates for GitHub-facing actions
 
 8. Read the final triage payload.
 
@@ -195,14 +233,16 @@ jq '{window, counts, env_filtered}' /tmp/final_triage.json
 Stop if:
 - batch counts or bucket contents contradict the agent review you just performed
 
-9. Draft GitHub-facing snippets from raw logs.
+9. Draft GitHub-facing snippets from stored excerpts.
 
 Rules:
-- for `create[]`, fetch evidence from `links`
-- for `comment[]` and `reopen_and_comment[]`, fetch evidence from `new_links`
+- do not re-read raw CI logs by default in this step
+- for `create[]`, choose the stored excerpt candidate whose `ci_url` matches the selected `links`
+- for `comment[]` and `reopen_and_comment[]`, choose the stored excerpt candidate whose `ci_url` matches the selected `new_links`
+- if multiple stored excerpt candidates match, prefer the one with the highest `excerpt_confidence`
+- use stored `excerpt_lines` directly as the `### Which jobs are failing` code block body
 - for `unknown[]` and `env_filtered[]`, report them only; do not draft issue or comment text
-- use `references/stack_snippet_guidelines.md`
-- use `references/stack_snippet_examples.jsonl`
+- only fall back to re-opening raw CI logs when no stored excerpt candidate matches, excerpt confidence is too low, or validation fails
 
 Outputs:
 - `/tmp/pd_ci_flaky_report_draft.md`: draft markdown containing only GitHub-facing flaky report sections
@@ -335,10 +375,10 @@ Do not use `### Stack excerpt`.
 
 - Low-level stage helpers only: `scripts/stage_common.py`
 - Failure collection and log fetch: `scripts/prepare_logs.py`
-- Observation build: `scripts/build_observations.py`
+- Failure item extraction and excerpt selection: agent reads `log_ref` files directly and writes `/tmp/prow_failure_items.json` and `/tmp/actions_failure_items.json`
 - Review candidate build: `scripts/build_env_review_candidates.py`, `scripts/build_issue_match_candidates.py`, `scripts/build_action_review_candidates.py`
 - Final assembly: `scripts/assemble_final_triage.py`
-- Legacy compatibility entrypoint: `scripts/triage_pd_ci_flaky.py`
+- Legacy parser and issue helpers: `scripts/triage_pd_ci_flaky.py`
 - Validator: `scripts/validate_flaky_snippets.py`
-- Snippet guidelines: `references/stack_snippet_guidelines.md`
-- Snippet examples: `references/stack_snippet_examples.jsonl`
+- Excerpt guidelines: `references/stack_snippet_guidelines.md`
+- Excerpt examples: `references/stack_snippet_examples.jsonl`

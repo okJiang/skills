@@ -22,15 +22,14 @@ class StageStructureTests(unittest.TestCase):
         self.assertFalse((SCRIPT_DIR / "collect_prow_failures.py").exists())
         self.assertFalse((SCRIPT_DIR / "collect_actions_failures.py").exists())
 
-    def test_observation_stage_is_single_entrypoint(self) -> None:
-        self.assertTrue((SCRIPT_DIR / "build_observations.py").exists())
+    def test_failure_item_extraction_is_agent_written_artifact_only(self) -> None:
+        self.assertFalse((SCRIPT_DIR / "build_observations.py").exists())
         self.assertFalse((SCRIPT_DIR / "build_prow_observations.py").exists())
         self.assertFalse((SCRIPT_DIR / "build_actions_observations.py").exists())
 
     def test_atomic_stage_scripts_do_not_import_agent_workflow(self) -> None:
         stage_scripts = [
             "prepare_logs.py",
-            "build_observations.py",
             "build_env_review_candidates.py",
             "build_issue_match_candidates.py",
             "build_action_review_candidates.py",

@@ -52,6 +52,10 @@ def _selected_issue(decision: dict, candidate: dict) -> dict | None:
     return selected
 
 
+def _excerpt_candidates(candidate: dict) -> list[dict]:
+    return list(candidate.get("excerpt_candidates", []))
+
+
 def assemble_final_triage_payload(
     *,
     action_review_candidates: dict,
@@ -89,6 +93,12 @@ def assemble_final_triage_payload(
                     "ci_name": item["ci_name"],
                     "ci_url": item["ci_url"],
                     "log_ref": item["log_ref"],
+                    "failure_family": item.get("failure_family"),
+                    "excerpt_lines": item.get("excerpt_lines", []),
+                    "excerpt_start_line": item.get("excerpt_start_line"),
+                    "excerpt_end_line": item.get("excerpt_end_line"),
+                    "excerpt_confidence": item.get("excerpt_confidence"),
+                    "excerpt_reason": item.get("excerpt_reason", ""),
                     "environment_reason": decision.get("reason", ""),
                 }
             )
@@ -118,6 +128,7 @@ def assemble_final_triage_payload(
                     "links": candidate["links"],
                     "ci_names": candidate["ci_names"],
                     "signatures": candidate["signatures"],
+                    "excerpt_candidates": _excerpt_candidates(candidate),
                     "debug_only_evidence_summary": candidate["debug_only_evidence_summary"],
                     "review_reason": decision.get("reason", ""),
                 }
@@ -138,6 +149,7 @@ def assemble_final_triage_payload(
                     "new_links": candidate["links"],
                     "ci_names": candidate["ci_names"],
                     "signatures": candidate["signatures"],
+                    "excerpt_candidates": _excerpt_candidates(candidate),
                     "debug_only_evidence_summary": candidate["debug_only_evidence_summary"],
                     "review_reason": decision.get("reason", ""),
                 }
@@ -153,6 +165,7 @@ def assemble_final_triage_payload(
                     "links": candidate["links"],
                     "ci_names": candidate["ci_names"],
                     "signatures": candidate["signatures"],
+                    "excerpt_candidates": _excerpt_candidates(candidate),
                     "debug_only_evidence_summary": candidate["debug_only_evidence_summary"],
                     "decision_reason": decision.get("reason", ""),
                     "existing_issue_number": ((candidate.get("issue_matches", {}).get("selected_match") or {}).get("number")),

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build issue match candidates for kept observations."""
+"""Build issue match candidates for kept failure items."""
 
 from __future__ import annotations
 
@@ -26,19 +26,23 @@ def _validated_env_decisions(
     return indexed
 
 
-def _filter_observations_for_downstream(
-    observation_payloads: list[dict],
+def _payload_failure_items(payload: dict) -> list[dict]:
+    return payload.get("failure_items", [])
+
+
+def _filter_failure_items_for_downstream(
+    failure_item_payloads: list[dict],
     *,
     env_review_payload: dict | None,
     env_review_decisions: dict | None,
 ) -> list[dict]:
     if env_review_payload is None or env_review_decisions is None:
-        return observation_payloads
+        return failure_item_payloads
     decisions = _validated_env_decisions(env_review_payload, env_review_decisions)
     filtered = []
-    for payload in observation_payloads:
+    for payload in failure_item_payloads:
         kept = []
-        for item in payload.get("observations", []):
+        for item in _payload_failure_items(payload):
             decision = decisions[item["candidate_id"]]["decision"]
             if decision == "keep":
                 kept.append(item)
@@ -50,9 +54,9 @@ def _filter_observations_for_downstream(
                 **payload,
                 "counts": {
                     **payload.get("counts", {}),
-                    "observations": len(kept),
+                    "failure_items": len(kept),
                 },
-                "observations": kept,
+                "failure_items": kept,
             }
         )
     return filtered
@@ -69,10 +73,10 @@ def _union_preserve_order(values: list[str | None]) -> list[str]:
     return deduped
 
 
-def _group_observations(observation_payloads: list[dict]) -> dict[str, list[dict]]:
+def _group_failure_items(failure_item_payloads: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
-    for payload in observation_payloads:
-        for item in payload.get("observations", []):
+    for payload in failure_item_payloads:
+        for item in _payload_failure_items(payload):
             grouped.setdefault(item["group_key"], []).append(item)
     for values in grouped.values():
         values.sort(key=lambda item: item["candidate_id"])
@@ -117,19 +121,19 @@ def _score_and_rank_matches(
 
 def build_issue_match_candidates_payload(
     *,
-    observation_payloads: list[dict],
+    failure_item_payloads: list[dict],
     env_review_payload: dict | None,
     env_review_decisions: dict | None,
     open_issues: list[dict],
     closed_issues: list[dict],
     max_matches: int = 5,
 ) -> dict:
-    filtered_payloads = _filter_observations_for_downstream(
-        observation_payloads,
+    filtered_payloads = _filter_failure_items_for_downstream(
+        failure_item_payloads,
         env_review_payload=env_review_payload,
         env_review_decisions=env_review_decisions,
     )
-    grouped = _group_observations(filtered_payloads)
+    grouped = _group_failure_items(filtered_payloads)
     window = filtered_payloads[0]["window"] if filtered_payloads else {"start": "", "end": ""}
     candidates = []
 
@@ -171,7 +175,7 @@ def build_issue_match_candidates_payload(
                 "group_key": group_key,
                 "source": lead["source"],
                 "canonical_target": lead["target"],
-                "observation_ids": [item["candidate_id"] for item in items],
+                "failure_item_ids": [item["candidate_id"] for item in items],
                 "selected_match": (
                     {
                         "number": selected["number"],
@@ -211,12 +215,12 @@ def main() -> int:
     summary = LEGACY.RunSummary(scanned_window_start="", scanned_window_end="")
     if not LEGACY.ensure_gh_auth(summary=summary, retries=args.retry_count):
         return 1
-    observation_payloads = [read_json(path) for path in args.input_json]
+    failure_item_payloads = [read_json(path) for path in args.input_json]
     env_review_payload = read_json(args.env_review_payload)
     env_review_decisions = read_json(args.env_review_decisions)
     open_issues, closed_issues = load_open_closed_issues(args.repo, retries=args.retry_count)
     payload = build_issue_match_candidates_payload(
-        observation_payloads=observation_payloads,
+        failure_item_payloads=failure_item_payloads,
         env_review_payload=env_review_payload,
         env_review_decisions=env_review_decisions,
         open_issues=open_issues,

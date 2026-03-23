@@ -26,19 +26,23 @@ def _validated_env_decisions(
     return indexed
 
 
-def _filter_observations_for_downstream(
-    observation_payloads: list[dict],
+def _payload_failure_items(payload: dict) -> list[dict]:
+    return payload.get("failure_items", [])
+
+
+def _filter_failure_items_for_downstream(
+    failure_item_payloads: list[dict],
     *,
     env_review_payload: dict | None,
     env_review_decisions: dict | None,
 ) -> list[dict]:
     if env_review_payload is None or env_review_decisions is None:
-        return observation_payloads
+        return failure_item_payloads
     decisions = _validated_env_decisions(env_review_payload, env_review_decisions)
     filtered = []
-    for payload in observation_payloads:
+    for payload in failure_item_payloads:
         kept = []
-        for item in payload.get("observations", []):
+        for item in _payload_failure_items(payload):
             decision = decisions[item["candidate_id"]]["decision"]
             if decision == "keep":
                 kept.append(item)
@@ -50,9 +54,9 @@ def _filter_observations_for_downstream(
                 **payload,
                 "counts": {
                     **payload.get("counts", {}),
-                    "observations": len(kept),
+                    "failure_items": len(kept),
                 },
-                "observations": kept,
+                "failure_items": kept,
             }
         )
     return filtered
@@ -69,30 +73,47 @@ def _union_preserve_order(values: list[str | None]) -> list[str]:
     return deduped
 
 
-def _group_observations(observation_payloads: list[dict]) -> dict[str, list[dict]]:
+def _group_failure_items(failure_item_payloads: list[dict]) -> dict[str, list[dict]]:
     grouped: dict[str, list[dict]] = {}
-    for payload in observation_payloads:
-        for item in payload.get("observations", []):
+    for payload in failure_item_payloads:
+        for item in _payload_failure_items(payload):
             grouped.setdefault(item["group_key"], []).append(item)
     for values in grouped.values():
         values.sort(key=lambda item: item["candidate_id"])
     return grouped
 
 
+def _build_excerpt_candidate(item: dict) -> dict:
+    return {
+        "failure_item_id": item["candidate_id"],
+        "target": item["target"],
+        "ci_name": item["ci_name"],
+        "ci_url": item["ci_url"],
+        "log_ref": item["log_ref"],
+        "signatures": item.get("signatures", []),
+        "failure_family": item.get("failure_family"),
+        "excerpt_lines": item.get("excerpt_lines", []),
+        "excerpt_start_line": item.get("excerpt_start_line"),
+        "excerpt_end_line": item.get("excerpt_end_line"),
+        "excerpt_confidence": item.get("excerpt_confidence"),
+        "excerpt_reason": item.get("excerpt_reason", ""),
+    }
+
+
 def build_action_review_candidates_payload(
     *,
-    observation_payloads: list[dict],
+    failure_item_payloads: list[dict],
     issue_match_payload: dict,
     env_review_payload: dict | None = None,
     env_review_decisions: dict | None = None,
     issue_labels: str = "type/ci",
 ) -> dict:
-    filtered_payloads = _filter_observations_for_downstream(
-        observation_payloads,
+    filtered_payloads = _filter_failure_items_for_downstream(
+        failure_item_payloads,
         env_review_payload=env_review_payload,
         env_review_decisions=env_review_decisions,
     )
-    grouped = _group_observations(filtered_payloads)
+    grouped = _group_failure_items(filtered_payloads)
     issue_match_map = {item["group_key"]: item for item in issue_match_payload.get("candidates", [])}
     labels = LEGACY.parse_label_list(issue_labels)
     candidates = []
@@ -137,7 +158,8 @@ def build_action_review_candidates_payload(
                     "distinct_pr_count": len(pr_numbers),
                     "distinct_sha_count": len(commit_shas),
                 },
-                "observation_ids": [item["candidate_id"] for item in items],
+                "excerpt_candidates": [_build_excerpt_candidate(item) for item in items],
+                "failure_item_ids": [item["candidate_id"] for item in items],
                 "suggested_action": suggested_action,
                 "suggested_action_reason": suggested_action_reason,
             }
@@ -166,12 +188,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    observation_payloads = [read_json(path) for path in args.input_json]
+    failure_item_payloads = [read_json(path) for path in args.input_json]
     issue_match_payload = read_json(args.issue_match_candidates)
     env_review_payload = read_json(args.env_review_payload) if args.env_review_payload else None
     env_review_decisions = read_json(args.env_review_decisions) if args.env_review_decisions else None
     payload = build_action_review_candidates_payload(
-        observation_payloads=observation_payloads,
+        failure_item_payloads=failure_item_payloads,
         issue_match_payload=issue_match_payload,
         env_review_payload=env_review_payload,
         env_review_decisions=env_review_decisions,
