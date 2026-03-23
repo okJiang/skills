@@ -1,4 +1,4 @@
 interface:
   display_name: "PD CI Flaky Triage"
   short_description: "Triage recent PD CI flaky failures"
-  default_prompt: "Use $pd-ci-flaky-triage to scan recent failed PD tests. Generate `Which jobs are failing` snippets from raw CI logs by failure family, run validator fail-closed, never use debug-only summaries as snippet content, and keep UNKNOWN_FAILURE items in `unknown[]` instead of drafting issue actions."
+  default_prompt: "Use $pd-ci-flaky-triage to run the staged PD flaky workflow: keep Prow and GitHub Actions separate through source-specific artifacts, perform env review before issue matching, review every action candidate before any GitHub write, generate `Which jobs are failing` snippets from raw CI logs, run validator fail-closed, never use debug-only summaries as snippet content, and keep `unknown[]` and `env_filtered[]` out of GitHub issue writes."
