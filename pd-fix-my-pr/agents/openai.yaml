@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fix My PD PR"
+  short_description: "Repair okJiang PD PR statics/conflicts"
+  default_prompt: "Use $pd-fix-my-pr to find and repair my open tikv/pd PRs with Check PD / statics failures or merge conflicts."
