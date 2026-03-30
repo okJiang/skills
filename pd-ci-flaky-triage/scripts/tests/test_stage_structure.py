@@ -14,31 +14,30 @@ class StageStructureTests(unittest.TestCase):
     def test_agent_workflow_module_is_removed(self) -> None:
         self.assertFalse((SCRIPT_DIR / "agent_workflow.py").exists())
 
-    def test_prepare_logs_stage_is_single_entrypoint(self) -> None:
+    def test_active_scripts_match_current_skill(self) -> None:
         self.assertTrue((SCRIPT_DIR / "prepare_logs.py").exists())
+        self.assertTrue((SCRIPT_DIR / "triage_pd_ci_flaky.py").exists())
+
+    def test_removed_stage_scripts_stay_removed(self) -> None:
         self.assertFalse((SCRIPT_DIR / "collect_failures.py").exists())
         self.assertFalse((SCRIPT_DIR / "fetch_prow_logs.py").exists())
         self.assertFalse((SCRIPT_DIR / "fetch_actions_logs.py").exists())
         self.assertFalse((SCRIPT_DIR / "collect_prow_failures.py").exists())
         self.assertFalse((SCRIPT_DIR / "collect_actions_failures.py").exists())
-
-    def test_failure_item_extraction_is_agent_written_artifact_only(self) -> None:
         self.assertFalse((SCRIPT_DIR / "build_observations.py").exists())
         self.assertFalse((SCRIPT_DIR / "build_prow_observations.py").exists())
         self.assertFalse((SCRIPT_DIR / "build_actions_observations.py").exists())
+        self.assertFalse((SCRIPT_DIR / "build_env_review_candidates.py").exists())
+        self.assertFalse((SCRIPT_DIR / "build_issue_match_candidates.py").exists())
+        self.assertFalse((SCRIPT_DIR / "build_action_review_candidates.py").exists())
+        self.assertFalse((SCRIPT_DIR / "assemble_final_triage.py").exists())
+        self.assertFalse((SCRIPT_DIR / "stage_common.py").exists())
+        self.assertFalse((SCRIPT_DIR / "validate_flaky_snippets.py").exists())
 
-    def test_atomic_stage_scripts_do_not_import_agent_workflow(self) -> None:
-        stage_scripts = [
-            "prepare_logs.py",
-            "build_env_review_candidates.py",
-            "build_issue_match_candidates.py",
-            "build_action_review_candidates.py",
-            "assemble_final_triage.py",
-        ]
-        for name in stage_scripts:
-            with self.subTest(script=name):
-                content = (SCRIPT_DIR / name).read_text(encoding="utf-8")
-                self.assertNotIn("agent_workflow", content)
+    def test_prepare_logs_no_longer_uses_stage_common(self) -> None:
+        content = (SCRIPT_DIR / "prepare_logs.py").read_text(encoding="utf-8")
+        self.assertNotIn("stage_common", content)
+        self.assertNotIn("agent_workflow", content)
 
 
 if __name__ == "__main__":
