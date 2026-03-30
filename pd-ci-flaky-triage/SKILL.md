@@ -65,8 +65,8 @@ Workflow properties:
 
 `/tmp/flaky_tests.json` is an agent-written artifact from step 4. The file must contain:
 
-- top-level `window`, `counts`, `flaky_tests`
-- one `flaky_tests[]` item per test chosen for GitHub handling
+- top-level `window`, `counts`, `flaky_tests`, `unknown_failures`
+- one `flaky_tests[]` item per test chosen for GitHub handling after review
 - for each flaky test:
   - `group_key`
   - `target.test_name`
@@ -74,6 +74,12 @@ Workflow properties:
   - `failure_item_ids`
   - `ci_links`
   - `pr_numbers`
+- one `unknown_failures[]` item per candidate rejected by the review subagent
+- for each unknown failure:
+  - `group_key`
+  - `failure_item_ids`
+  - `status`
+  - `reason`
 
 ## Workflow
 
@@ -118,14 +124,18 @@ Outputs:
 - `/tmp/failure_items.json`: failure items with source context, excerpt fields, and stable candidate ids
 - `/tmp/env_filtered.json`: failure items filtered out due to environmental issues
 
-4. Read the `/tmp/failure_items.json` file and decide which extracted failures are actual flaky tests. Note:
+4. Read the `/tmp/failure_items.json` file, decide which extracted failures are possible flaky tests, and then run a review subagent on each candidate. Note:
 
 - Skip `UNKNOWN_FAILURE` items. Keep them in `/tmp/failure_items.json` for inspection, but do not emit them to `/tmp/flaky_tests.json`.
 - If an identical test appears three or more times across different Pull Requests within this file, it is highly likely to be a flaky test.
+- If a test already has an open flaky test issue and the error message is nearly identical to the content in that issue, then it should be classified as a flaky test. In this specific scenario, there is no need to consider the number of times the error has occurred.
 - If a failed test appears multiple times within a single Pull Request and no errors occurred in other pull requests, it is likely caused by specific commits in that Pull Request rather than being a genuine flaky test. In such cases, do not identify it as a flaky test.
+- For each possible flaky test, assign one review subagent to inspect that test's failed CI links directly before keeping it.
+- The review subagent should decide whether the candidate is truly flaky. If the subagent finds a concrete reason that the candidate should not be treated as flaky, mark it as `UNKNOWN_FAILURE` and record the reason in `unknown_failures[]`.
+- Only candidates that pass this review should remain in `flaky_tests[]`.
 
 Outputs:
-- `/tmp/flaky_tests.json`: A file containing all of the flaky tests.
+- `/tmp/flaky_tests.json`: reviewed flaky tests ready for GitHub handling, plus reviewed candidates rejected as `UNKNOWN_FAILURE`
 
 5. Based on the identified flaky tests, search GitHub for an existing issue before writing anything.
 
@@ -134,7 +144,7 @@ For each flaky test:
 2. Only accept a match when the test or package evidence is exact enough to defend. `UNKNOWN_FAILURE` must not match on generic words such as `flaky`.
 3. If a confident match exists and it is open, reply in the thread with the new CI link.
 4. If a confident match exists and it is closed, reopen it and then reply with the new CI link.
-5. If no confident match exists, create a new issue.
+5. If no confident match exists, create a new issue. The issue name should not include the test suite portion.
 
 For every flaky test, assign a dedicated sub-agent to search GitHub and handle the corresponding operation independently.
 
@@ -161,6 +171,35 @@ Use this only for creating a new issue.
   - leave empty unless a human adds analysis
 - `### Anything else`
   - optional short metadata
+
+## Final Output Template
+
+After the skill finishes, reply with a short execution summary. Do not dump raw JSON. Use this template:
+
+```md
+PD CI flaky triage finished.
+
+Window:
+- <absolute time window>
+
+Summary:
+- scanned failure items: <number>
+- env filtered: <number>
+- reviewed flaky tests: <number>
+- rejected as UNKNOWN_FAILURE: <number>
+  - with reasons if possible
+
+GitHub actions:
+- created issues: <number or list>
+- reopened issues: <number or list>
+- commented issues: <number or list>
+- skipped actions: <number or list with short reasons>
+
+Needs attention:
+- <only include this section when there are blocked items, uncertain matches, or manual follow-up items>
+```
+
+Keep the reply concise. Lead with the outcome, then counts, then only the items that still need human attention.
 
 ## Resources
 

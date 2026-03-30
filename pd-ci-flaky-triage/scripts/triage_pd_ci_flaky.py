@@ -19,6 +19,7 @@ from typing import Any
 UTC = dt.timezone.utc
 PROGRESS_ENV = "PD_CI_FLAKY_PROGRESS"
 FIXED_ACTION_EVENTS = {"pull_request", "push"}
+MASTER_BRANCH = "master"
 
 
 @dataclasses.dataclass
@@ -220,6 +221,64 @@ def is_release_branch_job(job_name: str) -> bool:
     return "/release-" in lowered or lowered.startswith("release-")
 
 
+def build_targets_master(build: dict[str, Any]) -> bool:
+    refs = build.get("Refs", {}) or {}
+    pulls = refs.get("pulls", []) or []
+    if not pulls:
+        return True
+    base_ref = str(refs.get("base_ref") or refs.get("baseRef") or "").strip()
+    return base_ref == MASTER_BRANCH
+
+
+def actions_run_targets_master(
+    repo: str,
+    run: dict[str, Any],
+    summary: RunSummary,
+    retries: int,
+) -> bool:
+    event = str(run.get("event") or "").lower()
+    head_branch = str(run.get("headBranch") or "").strip()
+    if event == "push":
+        return head_branch == MASTER_BRANCH
+    if event != "pull_request":
+        return False
+    if not head_branch:
+        return False
+
+    prs = run_gh_json(
+        [
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--head",
+            head_branch,
+            "--state",
+            "all",
+            "--json",
+            "baseRefName,headRefName,headRefOid",
+        ],
+        summary=summary,
+        retries=retries,
+    )
+    if not prs:
+        return False
+
+    head_sha = str(run.get("headSha") or "").strip()
+    for pr in prs:
+        if str(pr.get("baseRefName") or "").strip() != MASTER_BRANCH:
+            continue
+        if head_sha and str(pr.get("headRefOid") or "").strip() == head_sha:
+            return True
+
+    for pr in prs:
+        if str(pr.get("baseRefName") or "").strip() != MASTER_BRANCH:
+            continue
+        if str(pr.get("headRefName") or "").strip() == head_branch:
+            return True
+    return False
+
+
 def collect_prow_jobs(repo: str, summary: RunSummary, retries: int) -> list[dict[str, Any]]:
     configured_url = f"https://prow.tidb.net/configured-jobs/{repo}"
     html = run_curl_text(configured_url, summary=summary, retries=retries)
@@ -301,6 +360,8 @@ def collect_prow_failures(
 
                 if not build_refs_match_repo(build, repo):
                     continue
+                if not build_targets_master(build):
+                    continue
 
                 result = str(build.get("Result", "")).upper()
                 refs = build.get("Refs", {}) or {}
@@ -361,7 +422,7 @@ def collect_actions_failures(
             "--limit",
             str(max_runs),
             "--json",
-            "databaseId,name,url,event,createdAt,headSha,displayTitle",
+            "databaseId,name,url,event,createdAt,headSha,headBranch,displayTitle",
         ],
         summary=summary,
         retries=retries,
@@ -377,6 +438,8 @@ def collect_actions_failures(
             continue
         event = str(run.get("event") or "").lower()
         if event not in FIXED_ACTION_EVENTS:
+            continue
+        if not actions_run_targets_master(repo=repo, run=run, summary=summary, retries=retries):
             continue
 
         run_name = run.get("name", "")

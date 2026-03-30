@@ -69,6 +69,28 @@ class TriageCollectionHelperTests(unittest.TestCase):
         self.assertTrue(MODULE.is_release_branch_job("release-9.0-unit-test"))
         self.assertFalse(MODULE.is_release_branch_job("pull-unit-test-next-gen-1"))
 
+    def test_build_targets_master_filters_non_master_prs(self) -> None:
+        self.assertTrue(
+            MODULE.build_targets_master(
+                {
+                    "Refs": {
+                        "base_ref": "master",
+                        "pulls": [{"number": 123}],
+                    }
+                },
+            ),
+        )
+        self.assertFalse(
+            MODULE.build_targets_master(
+                {
+                    "Refs": {
+                        "base_ref": "release-8.5",
+                        "pulls": [{"number": 123}],
+                    }
+                },
+            ),
+        )
+
     def test_sanitize_record_id_replaces_unsafe_chars(self) -> None:
         sanitized = MODULE.sanitize_record_id("prow/pull unit test?=1")
         self.assertEqual("prow_pull_unit_test_1", sanitized)
@@ -99,6 +121,7 @@ class TriageCollectionHelperTests(unittest.TestCase):
                 "url": "https://example.invalid/runs/1001",
                 "event": "pull_request",
                 "createdAt": "2026-03-30T08:00:00Z",
+                "headBranch": "feature-master",
                 "headSha": "abc123",
             },
             {
@@ -107,31 +130,90 @@ class TriageCollectionHelperTests(unittest.TestCase):
                 "url": "https://example.invalid/runs/1002",
                 "event": "schedule",
                 "createdAt": "2026-03-30T08:00:00Z",
+                "headBranch": "master",
                 "headSha": "def456",
             },
+            {
+                "databaseId": "1003",
+                "name": "PD Test",
+                "url": "https://example.invalid/runs/1003",
+                "event": "pull_request",
+                "createdAt": "2026-03-30T08:05:00Z",
+                "headBranch": "feature-release",
+                "headSha": "ghi789",
+            },
+            {
+                "databaseId": "1004",
+                "name": "PD Test",
+                "url": "https://example.invalid/runs/1004",
+                "event": "push",
+                "createdAt": "2026-03-30T08:10:00Z",
+                "headBranch": "master",
+                "headSha": "master123",
+            },
+            {
+                "databaseId": "1005",
+                "name": "PD Test",
+                "url": "https://example.invalid/runs/1005",
+                "event": "push",
+                "createdAt": "2026-03-30T08:12:00Z",
+                "headBranch": "release-8.5",
+                "headSha": "release123",
+            },
         ]
-        run_view = {
-            "jobs": [
+        run_views = {
+            "1001": {
+                "jobs": [
+                    {
+                        "databaseId": 3001,
+                        "name": "chunks (9, Integration)",
+                        "conclusion": "failure",
+                        "url": "https://example.invalid/jobs/3001",
+                    },
+                    {
+                        "databaseId": 3002,
+                        "name": "build-dashboard",
+                        "conclusion": "failure",
+                        "url": "https://example.invalid/jobs/3002",
+                    },
+                ]
+            },
+            "1004": {
+                "jobs": [
+                    {
+                        "databaseId": 3004,
+                        "name": "chunks (10, Integration)",
+                        "conclusion": "failure",
+                        "url": "https://example.invalid/jobs/3004",
+                    }
+                ]
+            },
+        }
+        pr_lists = {
+            "feature-master": [
                 {
-                    "databaseId": 3001,
-                    "name": "chunks (9, Integration)",
-                    "conclusion": "failure",
-                    "url": "https://example.invalid/jobs/3001",
-                },
+                    "baseRefName": "master",
+                    "headRefName": "feature-master",
+                    "headRefOid": "abc123",
+                }
+            ],
+            "feature-release": [
                 {
-                    "databaseId": 3002,
-                    "name": "build-dashboard",
-                    "conclusion": "failure",
-                    "url": "https://example.invalid/jobs/3002",
-                },
-            ]
+                    "baseRefName": "release-8.5",
+                    "headRefName": "feature-release",
+                    "headRefOid": "ghi789",
+                }
+            ],
         }
 
         def fake_run_gh_json(args: list[str], summary: object, retries: int) -> object:
             if args[:2] == ["run", "list"]:
                 return run_list
             if args[:2] == ["run", "view"]:
-                return run_view
+                return run_views[args[2]]
+            if args[:2] == ["pr", "list"]:
+                head_index = args.index("--head") + 1
+                return pr_lists[args[head_index]]
             raise AssertionError(f"unexpected gh args: {args}")
 
         with mock.patch.object(MODULE, "run_gh_json", side_effect=fake_run_gh_json):
@@ -143,10 +225,12 @@ class TriageCollectionHelperTests(unittest.TestCase):
                 retries=1,
             )
 
-        self.assertEqual(1, len(failures))
+        self.assertEqual(2, len(failures))
         self.assertEqual("actions", failures[0].source)
         self.assertEqual("PD Test / chunks (9, Integration)", failures[0].ci_name)
         self.assertEqual(3001, failures[0].job_id)
+        self.assertEqual("PD Test / chunks (10, Integration)", failures[1].ci_name)
+        self.assertEqual(3004, failures[1].job_id)
 
     def test_collect_prow_failures_filters_repo_and_tracks_outcomes(self) -> None:
         jobs = [
@@ -167,6 +251,7 @@ class TriageCollectionHelperTests(unittest.TestCase):
             "Refs": {
               "org": "tikv",
               "repo": "pd",
+              "base_ref": "master",
               "pulls": [{"number": 123, "sha": "abc123"}]
             }
           },
@@ -178,7 +263,20 @@ class TriageCollectionHelperTests(unittest.TestCase):
             "Refs": {
               "org": "tikv",
               "repo": "pd",
+              "base_ref": "master",
               "pulls": [{"number": 123, "sha": "abc123"}]
+            }
+          },
+          {
+            "Started": "2026-03-30T08:07:00Z",
+            "Result": "FAILURE",
+            "ID": "1004",
+            "SpyglassLink": "https://prow.tidb.net/view/gs/pingcap-jenkins/logs/job-name/1004",
+            "Refs": {
+              "org": "tikv",
+              "repo": "pd",
+              "base_ref": "release-8.5",
+              "pulls": [{"number": 124, "sha": "rel124"}]
             }
           },
           {
