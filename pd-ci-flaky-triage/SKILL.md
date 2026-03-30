@@ -144,6 +144,6 @@ Use this only for creating a new issue.
 ## Resources
 
 - Failure collection and log fetch: `scripts/prepare_logs.py`
-- Legacy parser and issue helpers: `scripts/triage_pd_ci_flaky.py`
+- Legacy CI collection and raw-log helpers: `scripts/triage_pd_ci_flaky.py`
 - Excerpt guidelines: `references/stack_snippet_guidelines.md`
 - Excerpt examples: `references/stack_snippet_examples.jsonl`
