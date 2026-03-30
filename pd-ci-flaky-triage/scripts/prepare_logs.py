@@ -9,6 +9,7 @@ import datetime as dt
 import importlib.util
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,25 @@ def build_window_payload(start: dt.datetime, end: dt.datetime) -> dict[str, str]
         "start": start.astimezone(UTC).isoformat(),
         "end": end.astimezone(UTC).isoformat(),
     }
+
+
+def parse_start_from(value: str) -> dt.datetime:
+    raw = value.strip()
+    if not raw:
+        raise ValueError("start-from cannot be empty")
+    if raw.endswith("Z") or re.search(r"[+-]\d{2}:\d{2}$", raw):
+        return LEGACY.parse_iso8601(raw)
+    parsed = dt.datetime.fromisoformat(raw)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def resolve_window(*, end: dt.datetime, days: int, start_from: str) -> tuple[dt.datetime, dt.datetime]:
+    if start_from:
+        start = parse_start_from(start_from)
+        return start, start + dt.timedelta(days=days)
+    return end - dt.timedelta(days=days), end
 
 
 def split_actions_ci_name(ci_name: str) -> tuple[str, str]:
@@ -207,6 +227,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default="tikv/pd")
     parser.add_argument("--days", type=int, default=1)
+    parser.add_argument(
+        "--start-from",
+        default="",
+        help="start time for a fixed window; when set, --days controls the window length from this time",
+    )
     parser.add_argument("--max-prow-pages", type=int, default=30)
     parser.add_argument("--max-action-runs", type=int, default=500)
     parser.add_argument("--retry-count", type=int, default=3)
@@ -291,7 +316,7 @@ def _build_actions_failures_payload(
 def main() -> int:
     args = parse_args()
     end = LEGACY.now_utc()
-    start = end - dt.timedelta(days=args.days)
+    start, end = resolve_window(end=end, days=args.days, start_from=args.start_from)
     auth_summary = LEGACY.RunSummary(
         scanned_window_start=start.isoformat(),
         scanned_window_end=end.isoformat(),

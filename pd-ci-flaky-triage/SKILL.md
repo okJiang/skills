@@ -95,9 +95,13 @@ Stop if:
 2. Collect recent failures and fetch raw logs.
 
 ```bash
-python3 scripts/prepare_logs.py \
-  --repo tikv/pd \
-  --days 1
+python3 scripts/prepare_logs.py --repo tikv/pd --days 1
+```
+
+For testing, you can override the default rolling window with `--start-from`. When `--start-from` is set, `--days` still matters and controls the length of the fixed window starting from that time. Example:
+
+```bash
+python3 scripts/prepare_logs.py --repo tikv/pd --start-from 2026-03-20 --days 2
 ```
 
 Outputs:
