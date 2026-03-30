@@ -5,7 +5,7 @@ description: Use when asked to triage recent tikv/pd CI failures and produce fla
 
 # PD CI Flaky Triage
 
-Run staged flaky triage for recent PD CI failures. `Prow` and `GitHub Actions` stay separate until the final reviewed triage payload is assembled, and the agent orchestrates each stage.
+Run staged flaky triage for recent PD CI failures. `Prow` and `GitHub Actions` are collected separately, analyzed separately in step 3, and then merged into shared review files for the later steps.
 
 Workflow properties:
 - source pipelines are explicit: `prow` and `actions` do not share an early normalized record type
@@ -13,17 +13,15 @@ Workflow properties:
 
 ## Hard Rules
 
-1. Every create/comment/reopen action must format `### Which jobs are failing` from the reviewed excerpt data selected in step 3. Re-open raw CI logs only when excerpt confidence is too low or validation fails.
-2. `UNKNOWN_FAILURE` never becomes a GitHub action by itself.
-3. Environment-filtered cases must be emitted under output JSON `env_filtered[]` only and must not become GitHub writes.
-4. Unknown cases must be emitted under output JSON `unknown[]` only.
-5. If one action fails extraction or validation, stop the whole run immediately.
+1. `UNKNOWN_FAILURE` never becomes a GitHub action by itself.
+2. Environment-filtered cases must be written to `/tmp/env_filtered.json` only and must not become GitHub writes.
+3. If one issue action cannot be justified from stored failure items and GitHub search results, don't create the action.
 
 ## Review File Contracts
 
-`/tmp/failure_items.json` is an agent-written artifact from step 3. The file must contain:
+`/tmp/failure_items.json` is an agent-written artifact merged after step 3. The file must contain:
 
-- top-level `source`, `window`, `counts`, `failure_items`
+- top-level `window`, `counts`, `failure_items`
 - one `failure_items[]` item per extracted failure item
 - for each failure item:
   - `candidate_id`
@@ -49,6 +47,33 @@ Workflow properties:
   - `excerpt_end_line`
   - `excerpt_confidence`
   - `excerpt_reason`
+
+`/tmp/env_filtered.json` is an agent-written artifact merged after step 3. The file must contain:
+
+- top-level `window`, `counts`, `env_filtered`
+- one `env_filtered[]` item per filtered failure item
+- for each filtered item:
+  - `source`
+  - `source_item_id`
+  - `target.test_name`
+  - `target.package_name`
+  - `ci_name`
+  - `ci_url`
+  - `log_ref`
+  - `excerpt_lines`
+  - `reason`
+
+`/tmp/flaky_tests.json` is an agent-written artifact from step 4. The file must contain:
+
+- top-level `window`, `counts`, `flaky_tests`
+- one `flaky_tests[]` item per test chosen for GitHub handling
+- for each flaky test:
+  - `group_key`
+  - `target.test_name`
+  - `target.package_name`
+  - `failure_item_ids`
+  - `ci_links`
+  - `pr_numbers`
 
 ## Workflow
 
@@ -80,47 +105,43 @@ Intermediate artifact note:
 
 3. Parse raw logs, extract failure items, and select GitHub-facing excerpts.
 
-You should delegate the work to two subagents (one for `Prow` and one for `GitHub Actions`). For each subagent:
+You should delegate the work to two subagents (one for `Prow` and one for `GitHub Actions`). Each subagent should return structured results for its own source. Do not let either subagent write the merged output files directly.
+
+For each subagent:
   1. Read the corresponding `logs.json` artifact to get the list of failures and their `log_ref` paths(`/tmp/prow_logs.json` and `/tmp/actions_logs.json`)
   2. Open each `log_ref` file directly, extract the failure items, and choose the excerpt. Use `references/stack_snippet_guidelines.md` and `references/stack_snippet_examples.jsonl` as guidelines and examples for excerpt selection.
-  3. When three or more test failures appear simultaneously in a single log file, we should categorize all of them as environmental factors and exclude them from further consideration. We are saving these test failures in the `/tmp/env_filtered.json` file for future reference, and don't record them in the `/tmp/failure_items.json` file.
-  4. Write `/tmp/failure_items.json`. Store the chosen excerpt on each failure item as `failure_family`, `excerpt_lines`, `excerpt_start_line`, `excerpt_end_line`, `excerpt_confidence`, and `excerpt_reason`. If the exact test name is unclear, keep the best package-level or unknown target you can defend, but still preserve signatures and evidence lines
+  3. When three or more test failures appear simultaneously in a single log file, categorize all of them as environmental factors and exclude them from further consideration. Return them under `env_filtered[]` for later merge into `/tmp/env_filtered.json`, and do not include them in `failure_items[]`.
+  4. Return source-specific `failure_items[]` and `env_filtered[]` data to the main agent. Keep `source` on every item. Store the chosen excerpt on each failure item as `failure_family`, `excerpt_lines`, `excerpt_start_line`, `excerpt_end_line`, `excerpt_confidence`, and `excerpt_reason`. If the exact test name is unclear, keep the best package-level or unknown target you can defend, but still preserve signatures and evidence lines
+  5. The main agent merges both sources and writes `/tmp/failure_items.json` and `/tmp/env_filtered.json`
 
 Outputs:
 - `/tmp/failure_items.json`: failure items with source context, excerpt fields, and stable candidate ids
 - `/tmp/env_filtered.json`: failure items filtered out due to environmental issues
 
-4. Read the `/tmp/failure_items.json` file and check all items. Attempt to identify which failure tests are flaky tests. Note:
+4. Read the `/tmp/failure_items.json` file and decide which extracted failures are actual flaky tests. Note:
 
-- If an identical test appears three or more times within this file, it is highly likely to be a flaky test.
-- If a failed test appears multiple times within a single Pull Request and no errors occurred in other pull requests, it is likely caused by specific commits in that Pull Request rather than being a genuine flaky test. In such cases, you should not identify it as a flaky test.
+- Skip `UNKNOWN_FAILURE` items. Keep them in `/tmp/failure_items.json` for inspection, but do not emit them to `/tmp/flaky_tests.json`.
+- If an identical test appears three or more times across different Pull Requests within this file, it is highly likely to be a flaky test.
+- If a failed test appears multiple times within a single Pull Request and no errors occurred in other pull requests, it is likely caused by specific commits in that Pull Request rather than being a genuine flaky test. In such cases, do not identify it as a flaky test.
 
 Outputs:
 - `/tmp/flaky_tests.json`: A file containing all of the flaky tests.
 
-5. Based on the identified flaky tests, you need to create a corresponding issue for each one. 
+5. Based on the identified flaky tests, search GitHub for an existing issue before writing anything.
 
-If an issue already exists, you should follow these steps:
-1. If the issue is currently open, reply in the thread with the link where the error occurred.
-2. If the issue has already been closed, you need to reopen it and then reply with the link to the error.
+For each flaky test:
+1. Search open `type/ci` issues first, then closed `type/ci` issues.
+2. Only accept a match when the test or package evidence is exact enough to defend. `UNKNOWN_FAILURE` must not match on generic words such as `flaky`.
+3. If a confident match exists and it is open, reply in the thread with the new CI link.
+4. If a confident match exists and it is closed, reopen it and then reply with the new CI link.
+5. If no confident match exists, create a new issue.
 
-For every failed flaky test, you need to assign a dedicated sub-agent to handle the corresponding operations independently.
+For every flaky test, assign a dedicated sub-agent to search GitHub and handle the corresponding operation independently.
 
-When creating a new issue, use stored `excerpt_lines` directly as the `### Which jobs are failing` code block body
-
-## Unknown Handling
-
-- `UNKNOWN_FAILURE` must never create, reopen, or comment on a GitHub issue.
-- Unknown items are direct outputs only.
-- Keep them in JSON `unknown[]` so a human can inspect them later.
-
-## Issue Matching Guardrails
-
-1. Open issues first, then closed issues.
-2. Require exact test or package evidence for confident matching.
-3. `UNKNOWN_FAILURE` must not match on generic words such as `flaky`.
-4. A suite summary alone is not enough evidence for final snippet selection.
-5. A matched issue is not enough by itself; re-check consistency against the selected failed CI target before writing GitHub.
+When creating a new issue:
+- Use stored `excerpt_lines` directly as the `### Which jobs are failing` code block body
+- Do not use a suite summary alone as the final excerpt
+- Re-check the matched target against the selected failed CI target before writing GitHub
 
 ## Idempotency
 

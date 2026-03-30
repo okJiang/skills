@@ -148,6 +148,74 @@ class TriageCollectionHelperTests(unittest.TestCase):
         self.assertEqual("PD Test / chunks (9, Integration)", failures[0].ci_name)
         self.assertEqual(3001, failures[0].job_id)
 
+    def test_collect_prow_failures_filters_repo_and_tracks_outcomes(self) -> None:
+        jobs = [
+            {
+                "name": "pull-unit-test-next-gen-1",
+                "jobHistoryLink": "/job-history/pull-unit-test-next-gen-1",
+            }
+        ]
+        history_html = """
+        <html>
+        <script>
+        var allBuilds = [
+          {
+            "Started": "2026-03-30T08:00:00Z",
+            "Result": "FAILURE",
+            "ID": "1001",
+            "SpyglassLink": "https://prow.tidb.net/view/gs/pingcap-jenkins/logs/job-name/1001",
+            "Refs": {
+              "org": "tikv",
+              "repo": "pd",
+              "pulls": [{"number": 123, "sha": "abc123"}]
+            }
+          },
+          {
+            "Started": "2026-03-30T08:05:00Z",
+            "Result": "SUCCESS",
+            "ID": "1002",
+            "SpyglassLink": "https://prow.tidb.net/view/gs/pingcap-jenkins/logs/job-name/1002",
+            "Refs": {
+              "org": "tikv",
+              "repo": "pd",
+              "pulls": [{"number": 123, "sha": "abc123"}]
+            }
+          },
+          {
+            "Started": "2026-03-30T08:10:00Z",
+            "Result": "FAILURE",
+            "ID": "1003",
+            "SpyglassLink": "https://prow.tidb.net/view/gs/pingcap-jenkins/logs/job-name/1003",
+            "Refs": {
+              "org": "pingcap",
+              "repo": "ticdc",
+              "pulls": [{"number": 999, "sha": "zzz999"}]
+            }
+          }
+        ];
+        </script>
+        </html>
+        """
+
+        with mock.patch.object(MODULE, "collect_prow_jobs", return_value=jobs):
+            with mock.patch.object(MODULE, "run_curl_text", return_value=history_html):
+                failures, outcomes = MODULE.collect_prow_failures(
+                    repo="tikv/pd",
+                    since=MODULE.parse_iso8601("2026-03-30T00:00:00Z"),
+                    max_pages=1,
+                    summary=make_summary(),
+                    retries=1,
+                )
+
+        self.assertEqual(1, len(failures))
+        self.assertEqual("prow", failures[0].source)
+        self.assertEqual("pull-unit-test-next-gen-1", failures[0].ci_name)
+        self.assertEqual(123, failures[0].pr_number)
+        self.assertEqual(
+            {"FAILURE", "SUCCESS"},
+            outcomes["pull-unit-test-next-gen-1::abc123"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
