@@ -1,0 +1,908 @@
+{
+  "version": "v1",
+  "generated_at": "2026-03-19T07:45:04Z",
+  "source": {
+    "repo": "tikv/pd",
+    "window": {
+      "since": "2025-12-19",
+      "until": "2026-03-19"
+    },
+    "seed_pr_numbers": [
+      10334,
+      9925,
+      9785,
+      10137,
+      10246,
+      10103,
+      10263,
+      10042,
+      10061
+    ],
+    "raw_corpus": "analysis/pd-review-corpus/prs.json",
+    "signal_summary": "analysis/pd-review-corpus/signal-summary.json"
+  },
+  "schema": {
+    "case_fields": [
+      "case_id",
+      "skill_family",
+      "secondary_families",
+      "pr_number",
+      "pr_title",
+      "pr_url",
+      "merged_at",
+      "subsystem",
+      "review_prompt",
+      "expected_min_hits",
+      "expected_concerns"
+    ],
+    "concern_fields": [
+      "pattern_id",
+      "severity",
+      "when_to_trigger",
+      "concern",
+      "evidence_required",
+      "example_comment",
+      "counterexample",
+      "source_refs"
+    ]
+  },
+  "eval_guidance": {
+    "pass_rule": "For each case, the reviewer should surface at least expected_min_hits expected concerns with concrete evidence.",
+    "fail_rule": "Generic style feedback or vague summaries do not count as hits for contract, invariant, rollout, or observability cases.",
+    "question_driven_convergence": {
+      "assumption": "Do not treat missing CHANGES_REQUESTED as a negative signal. In PD, review often converges through inline questions and concerns before an eventual approval.",
+      "preferred_output_style": "evidence-backed inline questions or concerns first, verdict later",
+      "score_focus": "Measure whether the agent raises the expected high-value questions or concerns with diff-level evidence.",
+      "severity_principle": "Do not infer low severity from question form; severity depends on the underlying contract or correctness risk, not punctuation.",
+      "arbiter_mapping_hint": {
+        "blocking": "Approval-blocking concern that must be resolved before merge.",
+        "non_blocking": "Real but deferrable concern, suggestion, or polish item.",
+        "question": "Evidence-seeking or convergence-driving question that should still count as a positive hit when it targets an expected concern."
+      }
+    },
+    "severity_mapping": {
+      "principle": "Severity depends on underlying risk, not whether the reviewer used a question mark.",
+      "blocking": "Often phrased as a question, but actually points to a high-confidence contract, correctness, rollback, validation-bypass, status-code drift, or test-goal alignment risk.",
+      "non_blocking": "Behavior is probably correct, but there is meaningful maintainability, naming, abstraction, or context-budget risk.",
+      "question": "Primarily requests rationale, missing evidence, or boundary clarification and is not yet sufficient to assert a concrete defect."
+    }
+  },
+  "cases": [
+    {
+      "case_id": "pd-10334-controller-config-rollout",
+      "skill_family": "compat-and-rollout",
+      "secondary_families": [
+        "abstractions-and-naming",
+        "invariants-and-boundaries"
+      ],
+      "pr_number": 10334,
+      "pr_title": "resource_group: add per-keyspace RU version config via ControllerConfig",
+      "pr_url": "https://github.com/tikv/pd/pull/10334",
+      "merged_at": "2026-03-18T08:04:26Z",
+      "subsystem": [
+        "pkg/mcs/resourcemanager",
+        "client/resource_group"
+      ],
+      "review_prompt": "Review this PR as a PD reviewer focusing on controller config / RU version rollout safety. What approval-blocking concerns should be raised before merging?",
+      "expected_min_hits": 2,
+      "expected_concerns": [
+        {
+          "pattern_id": "compat.zero-value-semantics",
+          "severity": "high",
+          "when_to_trigger": "A PR adds or changes config/default fields where zero values or omitted values have runtime semantics.",
+          "concern": "Check whether zero means 'unset', 'inherit default', or 'do not update'. Ambiguous zero-value encoding can block reset or rollback behavior.",
+          "evidence_required": "Point to the field or API encoding and explain at least one ambiguous reset or persistence scenario.",
+          "example_comment": "What if we set ruVersion to 0?",
+          "counterexample": "Skip this if the API uses explicit presence tracking and tests cover reset/inherit semantics.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10334#discussion_r2929252889",
+              "author": "JmPotato",
+              "kind": "review_comment",
+              "path": "pkg/mcs/resourcemanager/server/apis/v1/api.go",
+              "excerpt": "Zero-value ambiguity: `ru_version = 0` with `omitempty` means both \"not configured\" (storage) and \"no update\" (request). If you ever need to explicitly reset a keyspace's ru_version to \"unconfigured\", the API can't express that. A pointer t"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10334#discussion_r2944594054",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "pkg/mcs/resourcemanager/server/manager.go",
+              "excerpt": "What if we set ruVersion to 0?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10334#discussion_r2944723225",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "pkg/mcs/resourcemanager/server/manager.go",
+              "excerpt": "If the default version later becomes 2 after setting it to 0, will it be 1?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "compat.atomic-update-boundary",
+          "severity": "high",
+          "when_to_trigger": "A PR performs multiple config mutations that must succeed or fail as one logical change.",
+          "concern": "Check whether multi-step updates are atomic from the API point of view or can partially apply on error.",
+          "evidence_required": "Show the update sequence and describe the partial-update state that can leak if the second step fails.",
+          "example_comment": "Non-atomic dual update: `SetKeyspaceServiceLimit` is called unconditionally above, then `SetKeyspaceRuVersion` is called here conditionally.",
+          "counterexample": "Skip this if the change is guarded by an explicit transaction or rollback path with tests.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10334#discussion_r2929252887",
+              "author": "JmPotato",
+              "kind": "review_comment",
+              "path": "pkg/mcs/resourcemanager/server/apis/v1/api.go",
+              "excerpt": "Non-atomic dual update: `SetKeyspaceServiceLimit` is called unconditionally above, then `SetKeyspaceRuVersion` is called here conditionally. If `SetKeyspaceRuVersion` fails, the response returns an error but `service_limit` has already been"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10334#discussion_r2944654197",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "pkg/mcs/resourcemanager/server/manager.go",
+              "excerpt": "The new `ru-version-policy` special case looks structurally incompatible with `jsonutil.AddKeyValue`. That helper always wraps updates as `{key: value}` before merging, so here it will try to merge `{\"ru-version-policy\": ...}` into `&m.cont"
+            }
+          ]
+        },
+        {
+          "pattern_id": "abstraction.responsibility-mismatch",
+          "severity": "medium",
+          "when_to_trigger": "A PR stores new policy or mode data inside a struct whose responsibility is narrower.",
+          "concern": "Check whether new state is being attached to an object whose name and invariants imply a different responsibility boundary.",
+          "evidence_required": "Point to the struct or API name and explain the conceptual mismatch.",
+          "example_comment": "`RuVersion` on `serviceLimiter` is a responsibility mismatch.",
+          "counterexample": "Skip this if the containing type is already the canonical home for the policy and the naming remains accurate.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10334#pullrequestreview-3941856441",
+              "author": "JmPotato",
+              "kind": "review",
+              "path": null,
+              "excerpt": "## Design Review\n\nOverall the PR achieves its goal cleanly with good test coverage. One design concern worth discussing: **putting `RuVersion` inside `serviceLimiter` couples two conceptually different concerns.**\n\n### What works well\n- Reu"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10334#discussion_r2922401222",
+              "author": "disksing",
+              "kind": "review_comment",
+              "path": "pkg/utils/keypath/absolute_key_path.go",
+              "excerpt": "maybe better to store together with service_limits ? cc @JmPotato"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10334#pullrequestreview-3964555185",
+              "author": "YuhaoZhang00",
+              "kind": "review",
+              "path": null,
+              "excerpt": "Style fix: should always use `RU` in method and parameter naming, not a mixture of `RU` and `Ru`."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "pd-9925-router-service-client-invariants",
+      "skill_family": "invariants-and-boundaries",
+      "secondary_families": [
+        "abstractions-and-naming",
+        "tests-and-regressions"
+      ],
+      "pr_number": 9925,
+      "pr_title": "Client: support pd client access to the router service",
+      "pr_url": "https://github.com/tikv/pd/pull/9925",
+      "merged_at": "2026-01-20T09:13:14Z",
+      "subsystem": [
+        "client/clients/router",
+        "client/servicediscovery"
+      ],
+      "review_prompt": "Review this PR as a PD reviewer focusing on router-service client integration. Surface the invariant, nil/retry, and naming questions that should be answered before approval.",
+      "expected_min_hits": 2,
+      "expected_concerns": [
+        {
+          "pattern_id": "boundary.nil-retry-semantics",
+          "severity": "high",
+          "when_to_trigger": "A PR changes request construction, service discovery, or retry behavior in a client path.",
+          "concern": "Check whether nil inputs, nil returns, and error returns have explicit semantics and whether callers retry correctly in each branch.",
+          "evidence_required": "Point to one boundary branch and describe the caller-visible behavior under nil or error returns.",
+          "example_comment": "Do we allow passing a nil to the request?",
+          "counterexample": "Skip this if the API rejects nil at the type boundary or the behavior is already covered by tests and docs.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/9925#discussion_r2638778555",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "client/clients/router/request.go",
+              "excerpt": "Do we allow passing a nil to the request?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/9925#discussion_r2674986177",
+              "author": "ystaticy",
+              "kind": "review_comment",
+              "path": "client/servicediscovery/router_service_discovery.go",
+              "excerpt": "How do the error and nil returns from updateMember affect the upper-level behavior? Will the caller retry in both cases?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "boundary.duplicate-guards",
+          "severity": "medium",
+          "when_to_trigger": "A PR adds new booleans, readiness checks, or repeated guards around connection or discovery state.",
+          "concern": "Check whether repeated checks or booleans represent a real invariant or are compensating for unclear state ownership.",
+          "evidence_required": "Point to a repeated condition or boolean flag and explain why its lifecycle is unclear.",
+          "example_comment": "Why only use a bool check for the router service client here?",
+          "counterexample": "Skip this if the check is the single authoritative gate and the state transition is clearly documented.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/9925#discussion_r2638826613",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "client/inner_client.go",
+              "excerpt": "When will it become true?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/9925#discussion_r2697501273",
+              "author": "ystaticy",
+              "kind": "review_comment",
+              "path": "client/inner_client.go",
+              "excerpt": "Why only use a bool check for the router service client here?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/9925#discussion_r2697527256",
+              "author": "ystaticy",
+              "kind": "review_comment",
+              "path": "client/inner_client.go",
+              "excerpt": "I'm a bit confused here. Why can we use mcsSvcDiscovery to check enableRouterServiceClient? The naming suggests it's for all ms services."
+            }
+          ]
+        },
+        {
+          "pattern_id": "naming.api-semantics",
+          "severity": "medium",
+          "when_to_trigger": "A PR introduces new options, flags, or helpers whose names imply broader or narrower semantics than the runtime behavior.",
+          "concern": "Check whether option names and service-discovery names match the real mode scope and fallback behavior.",
+          "evidence_required": "Point to one identifier whose name and behavior diverge.",
+          "example_comment": "I'm a bit confused here. Why can we use mcsSvcDiscovery to check enableRouterServiceClient? The naming suggests it's for all ms services.",
+          "counterexample": "Skip this if the naming is already scoped correctly and the type or API boundary enforces the intended usage.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/9925#discussion_r2697527256",
+              "author": "ystaticy",
+              "kind": "review_comment",
+              "path": "client/inner_client.go",
+              "excerpt": "I'm a bit confused here. Why can we use mcsSvcDiscovery to check enableRouterServiceClient? The naming suggests it's for all ms services."
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/9925#discussion_r2646042124",
+              "author": "okJiang",
+              "kind": "review_comment",
+              "path": "client/opt/option.go",
+              "excerpt": "Can we implement the fallback mechanism inside PD client and remove this option or others like FollowerHandle"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "pd-9785-rm-discovery-rollout",
+      "skill_family": "tests-and-regressions",
+      "secondary_families": [
+        "compat-and-rollout",
+        "invariants-and-boundaries",
+        "abstractions-and-naming"
+      ],
+      "pr_number": 9785,
+      "pr_title": "client: resource manager service discovery",
+      "pr_url": "https://github.com/tikv/pd/pull/9785",
+      "merged_at": "2026-01-06T08:07:35Z",
+      "subsystem": [
+        "client/servicediscovery",
+        "tests/integrations/mcs"
+      ],
+      "review_prompt": "Review this PR as a PD reviewer focusing on resource-manager discovery rollout. What tests, mode-handling, and lifecycle concerns should block approval?",
+      "expected_min_hits": 2,
+      "expected_concerns": [
+        {
+          "pattern_id": "tests.upgrade-coverage",
+          "severity": "high",
+          "when_to_trigger": "A PR changes discovery, service mode, or compatibility behavior across deployment modes.",
+          "concern": "Check whether upgrade or mode-transition tests exist, not just happy-path unit tests.",
+          "evidence_required": "Point to the changed behavior and identify the missing upgrade or mode transition scenario.",
+          "example_comment": "Is there any upgrade test?",
+          "counterexample": "Skip this if the behavior is internal-only and already covered by explicit upgrade or cross-mode tests.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/9785#discussion_r2650316778",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "tests/integrations/mcs/resourcemanager/resource_manager_test.go",
+              "excerpt": "Is there any upgrade test?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "compat.unknown-mode-handling",
+          "severity": "high",
+          "when_to_trigger": "A PR touches mode switching or service discovery enums.",
+          "concern": "Check how unknown or unsupported service modes are handled and whether the error path preserves previous behavior.",
+          "evidence_required": "Point to the enum or mode branch and describe what happens for unknown values.",
+          "example_comment": "How to handle `ServiceMode_UNKNOWN_SVC_MODE`?",
+          "counterexample": "Skip this if unknown values are already unreachable by construction and that invariant is documented.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/9785#discussion_r2650256633",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "client/client.go",
+              "excerpt": "How to handle `ServiceMode_UNKNOWN_SVC_MODE`?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "lifecycle.background-job",
+          "severity": "medium",
+          "when_to_trigger": "A PR adds background jobs, ticker loops, or lock-protected service updates.",
+          "concern": "Check whether the new background work is necessary, whether the chosen lock level is justified, and whether duplicated update paths can be simplified.",
+          "evidence_required": "Point to the background loop or lock site and explain the real race or shutdown scenario.",
+          "example_comment": "There is a useless background job.",
+          "counterexample": "Skip this if the loop is the single required reconciliation path and shutdown/race handling is explicit.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/9785#discussion_r2659457495",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "client/inner_client.go",
+              "excerpt": "Is the lock necessary?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/9785#discussion_r2660139232",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "client/inner_client.go",
+              "excerpt": "Rlock is enough?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/9785#discussion_r2660138833",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "client/inner_client.go",
+              "excerpt": "There is a useless background job."
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/9785#discussion_r2660438357",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "client/servicediscovery/resource_manager_service_discovery.go",
+              "excerpt": "Then we can reduce the duplicated code?"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "pd-10137-tso-logical-exhaust-safety",
+      "skill_family": "invariants-and-boundaries",
+      "secondary_families": [
+        "abstractions-and-naming",
+        "observability-and-docs"
+      ],
+      "pr_number": 10137,
+      "pr_title": "tso:update tso timestamp when met logic exhaust",
+      "pr_url": "https://github.com/tikv/pd/pull/10137",
+      "merged_at": "2026-02-12T09:27:26Z",
+      "subsystem": [
+        "pkg/tso"
+      ],
+      "review_prompt": "Review this PR as if you are reviewing extremely critical TSO logic. What semantics, naming, and safety questions must be resolved before approval?",
+      "expected_min_hits": 3,
+      "expected_concerns": [
+        {
+          "pattern_id": "critical-path.persist-vs-memory",
+          "severity": "high",
+          "when_to_trigger": "A PR changes state-advance logic on a critical replicated or timestamp path.",
+          "concern": "Check whether in-memory updates and persistence updates are intentionally separated and whether the naming makes that separation obvious.",
+          "evidence_required": "Point to the update path and explain what is updated, what is persisted, and which caller purpose controls it.",
+          "example_comment": "update but not persist?",
+          "counterexample": "Skip this if the function name and call contract already make the memory-vs-persist split explicit.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10137#discussion_r2675003615",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "pkg/tso/tso.go",
+              "excerpt": "update but not persist?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10137#discussion_r2675192606",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "pkg/tso/tso.go",
+              "excerpt": "allowSaveStorage is false here"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10137#discussion_r2730575393",
+              "author": "JmPotato",
+              "kind": "review_comment",
+              "path": "pkg/tso/tso.go",
+              "excerpt": "From the perspective of `setTSOPhysical`, the name of the variable `allowSaveStorage` is inappropriate. The concept from the upper-level logic might be passed in under a different name."
+            }
+          ]
+        },
+        {
+          "pattern_id": "critical-path.boolean-flag-clarity",
+          "severity": "high",
+          "when_to_trigger": "A PR introduces boolean guards or options that invert logic on a critical path.",
+          "concern": "Check whether boolean flags or option types describe the actual precondition instead of forcing readers to mentally invert the meaning.",
+          "evidence_required": "Point to a misleading flag or option name and explain the inversion.",
+          "example_comment": "The name `withLogicalOverflowCheck` suggests \"check if there's an overflow\", but it actually means \"skip if there is NOT an overflow\".",
+          "counterexample": "Skip this if the naming already reflects the true predicate or the boolean is replaced by a richer enum.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10137#discussion_r2752375086",
+              "author": "JmPotato",
+              "kind": "review_comment",
+              "path": "pkg/tso/tso.go",
+              "excerpt": "The logic here is a bit confusing; perhaps more comments need to be added or the code needs to be revised. If `allowSaveStorage` is true, it means this is the regular TSO advancement logic that runs every 50ms, so as long as the `withInitia"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10137#discussion_r2689333209",
+              "author": "JmPotato",
+              "kind": "review_comment",
+              "path": "pkg/tso/tso.go",
+              "excerpt": "Maybe this function needs to be renamed to emphasize “compare and set” more clearly, like `compareAndSetTSOPhysical`."
+            }
+          ]
+        },
+        {
+          "pattern_id": "critical-path.intent-docs",
+          "severity": "medium",
+          "when_to_trigger": "A PR changes non-obvious control flow on a critical path.",
+          "concern": "Check whether the code is self-explanatory; if not, demand comments or clearer structure before approval.",
+          "evidence_required": "Point to the confusing branch and explain which intent cannot be recovered from code alone.",
+          "example_comment": "The logic here is a bit confusing; perhaps more comments need to be added or the code needs to be revised.",
+          "counterexample": "Skip this if the control flow is already linear and the names carry the full intent.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10137#discussion_r2752375086",
+              "author": "JmPotato",
+              "kind": "review_comment",
+              "path": "pkg/tso/tso.go",
+              "excerpt": "The logic here is a bit confusing; perhaps more comments need to be added or the code needs to be revised. If `allowSaveStorage` is true, it means this is the regular TSO advancement logic that runs every 50ms, so as long as the `withInitia"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10137#discussion_r2771960716",
+              "author": "JmPotato",
+              "kind": "review_comment",
+              "path": "pkg/tso/tso.go",
+              "excerpt": "Better add a comment to explain what the returned bool means."
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10137#discussion_r2781660545",
+              "author": "JmPotato",
+              "kind": "review_comment",
+              "path": "pkg/tso/tso.go",
+              "excerpt": "This log should be more like a warnning."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "pd-10246-rm-metadata-handler-api-contract",
+      "skill_family": "compat-and-rollout",
+      "secondary_families": [
+        "tests-and-regressions",
+        "observability-and-docs",
+        "abstractions-and-naming"
+      ],
+      "pr_number": 10246,
+      "pr_title": "rm: add RM metadata handler with redirector scaffold",
+      "pr_url": "https://github.com/tikv/pd/pull/10246",
+      "merged_at": "2026-03-16T06:28:02Z",
+      "subsystem": [
+        "pkg/mcs/resourcemanager/redirector",
+        "pkg/mcs/resourcemanager/server/apis/v1"
+      ],
+      "review_prompt": "Review this PR as a PD reviewer focusing on RM metadata API behavior. What contract, test, and documentation issues should be raised before approval?",
+      "expected_min_hits": 3,
+      "expected_concerns": [
+        {
+          "pattern_id": "tests.cross-mode-integration",
+          "severity": "high",
+          "when_to_trigger": "A PR adds redirector or handler behavior that differs between standalone and microservice deployments.",
+          "concern": "Check whether the behavior is covered by integration tests in each deployment mode.",
+          "evidence_required": "Point to the new API behavior and identify the missing environment matrix.",
+          "example_comment": "Do we need to add an integration test for this API in both the non-micro and micro scenarios?",
+          "counterexample": "Skip this if the behavior is mode-agnostic and existing integration tests already cover both environments.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10246#discussion_r2867181274",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/mcs/resourcemanager/redirector/metadata_handler_test.go",
+              "excerpt": "Do we need to add an integration test for this API in both the non-micro and micro scenarios?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "compat.http-status-contract",
+          "severity": "high",
+          "when_to_trigger": "A PR changes API error mapping or introduces new not-found behavior.",
+          "concern": "Check whether HTTP status codes match domain semantics and whether generated API docs or swagger annotations were updated.",
+          "evidence_required": "Point to the changed status mapping and the stale contract documentation.",
+          "example_comment": "If the keyspace name does not exist ... it should return 404.",
+          "counterexample": "Skip this if the API contract, generated spec, and handler behavior are already aligned and tested.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10246#discussion_r2867186712",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/mcs/resourcemanager/redirector/pd_metadata_handler.go",
+              "excerpt": "If the keyspace name does not exist, getKeyspaceIDByName will return an error. I don't think this is a bad request; it should return 404."
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10246#discussion_r2916242576",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "pkg/mcs/resourcemanager/server/apis/v1/api.go",
+              "excerpt": "This PR changes `PUT /config/group` to return `404` for a missing resource group, but the swagger annotation above still only documents `400` and `500`. If we regenerate the spec from these comments, the published API contract will stay sta"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10246#discussion_r2916242577",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "pkg/mcs/resourcemanager/server/apis/v1/api.go",
+              "excerpt": "Same documentation drift here: `ConfigService.SetKeyspaceServiceLimit` now maps keyspace-not-found to `404`, but this route annotation still only advertises `400`/`403`/`500`. The PR description calls out this status-code change explicitly,"
+            }
+          ]
+        },
+        {
+          "pattern_id": "compat.api-all-or-nothing",
+          "severity": "high",
+          "when_to_trigger": "A PR accepts multi-field config updates or patches that may fail per-item.",
+          "concern": "Check whether the API is truly all-or-nothing or can partially persist earlier fields before returning an error.",
+          "evidence_required": "Show a multi-item request that can partially succeed and name the value/type validation boundary that leaks partial state.",
+          "example_comment": "This still is not fully all-or-nothing from the API perspective.",
+          "counterexample": "Skip this if validation fully precedes mutation or the API explicitly documents partial success semantics.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10246#discussion_r2916242575",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "pkg/mcs/resourcemanager/metadataapi/config_service.go",
+              "excerpt": "This still is not fully all-or-nothing from the API perspective. We now validate all keys before applying, but value/type validation still happens inside `UpdateControllerConfigItem` one field at a time. If a request mixes one valid item wi"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "pd-10103-affinity-stale-cache-ordering",
+      "skill_family": "tests-and-regressions",
+      "secondary_families": [
+        "invariants-and-boundaries",
+        "abstractions-and-naming"
+      ],
+      "pr_number": 10103,
+      "pr_title": "affinity: add stale region cache to avoid cascading merges",
+      "pr_url": "https://github.com/tikv/pd/pull/10103",
+      "merged_at": "2025-12-23T06:43:02Z",
+      "subsystem": [
+        "pkg/schedule/checker",
+        "pkg/schedule/coordinator"
+      ],
+      "review_prompt": "Review this PR as a PD scheduler reviewer. What ordering, TTL, and merge-accounting concerns should be raised before approval?",
+      "expected_min_hits": 2,
+      "expected_concerns": [
+        {
+          "pattern_id": "scheduler.operator-ordering",
+          "severity": "high",
+          "when_to_trigger": "A PR caches scheduler state based on operator completion or merge progress.",
+          "concern": "Check whether caches update only after the operator lifecycle reaches the correct controller stage.",
+          "evidence_required": "Point to the cache write and the operator lifecycle step that should gate it.",
+          "example_comment": "We should update the cache after the operator has been put into the operator controller, to ensure the operator runs.",
+          "counterexample": "Skip this if the cache is purely advisory and stale ordering cannot affect scheduling behavior.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10103#discussion_r2639668097",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/schedule/checker/affinity_checker.go",
+              "excerpt": "We should update the cache after the operator has been put into the operator controller, to ensure the operator runs."
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10103#discussion_r2641734193",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "pkg/schedule/checker/affinity_checker.go",
+              "excerpt": "Is the merge also recorded?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "scheduler.ttl-assumption",
+          "severity": "medium",
+          "when_to_trigger": "A PR introduces TTLs or timing assumptions tied to heartbeat or merge completion.",
+          "concern": "Check whether the TTL or timing window is justified under backlog or pending-heartbeat scenarios.",
+          "evidence_required": "Point to the TTL value and describe the workload that can make it too small or too large.",
+          "example_comment": "1 min may be too small if the region heartbeat pending is high?",
+          "counterexample": "Skip this if the TTL is derived from a measured bound and documented alongside tests.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10103#discussion_r2639672969",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/schedule/checker/affinity_checker.go",
+              "excerpt": "1 min may be too small if the region heartbeat pending is high?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10103#discussion_r2639571688",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "pkg/schedule/checker/affinity_checker.go",
+              "excerpt": "What if we keep writing the region, but the merge is not finished?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "scheduler.nil-hooks",
+          "severity": "medium",
+          "when_to_trigger": "A PR wires success callbacks or checker hooks into coordinator paths.",
+          "concern": "Check whether nil or missing checker values are handled on the path that adds callbacks.",
+          "evidence_required": "Point to the callback registration site and explain the nil path.",
+          "example_comment": "Can we check for nil values during the adding process?",
+          "counterexample": "Skip this if the callback owner is guaranteed to exist by construction and the invariant is enforced nearby.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10103#discussion_r2642101185",
+              "author": "HunDunDM",
+              "kind": "review_comment",
+              "path": "pkg/schedule/coordinator.go",
+              "excerpt": "Can we check for nil values ​​during the adding process?"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "pd-10263-keyspace-metrics-log-signal",
+      "skill_family": "observability-and-docs",
+      "secondary_families": [
+        "compat-and-rollout"
+      ],
+      "pr_number": 10263,
+      "pr_title": "keyspace: add create keyspace metrics and logs",
+      "pr_url": "https://github.com/tikv/pd/pull/10263",
+      "merged_at": "2026-03-01T04:48:54Z",
+      "subsystem": [
+        "pkg/keyspace"
+      ],
+      "review_prompt": "Review this PR as a PD reviewer focusing on metrics and logs for keyspace creation. What observability concerns should be raised before approval?",
+      "expected_min_hits": 2,
+      "expected_concerns": [
+        {
+          "pattern_id": "obs.metric-uniqueness",
+          "severity": "high",
+          "when_to_trigger": "A PR adds new metrics or metric vectors in an existing subsystem.",
+          "concern": "Check whether the new metric name collides conceptually with existing metrics and whether registration is explicit.",
+          "evidence_required": "Point to the metric registration site and explain the duplicate or ambiguous metric shape.",
+          "example_comment": "Generally, we don't want two metrics to be the same.",
+          "counterexample": "Skip this if the new metric has a distinct semantic name and registration path.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10263#discussion_r2867026023",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/keyspace/metrics.go",
+              "excerpt": "Generally, we don't want two metrics to be the same, so you should use `prometheus.MustRegister(createKeyspaceStepDuration)` to init new metrics."
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10263#discussion_r2867027116",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/keyspace/metrics.go",
+              "excerpt": "Can you predefine these sub-metrics in the keyspace.go?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "obs.log-flood-threshold",
+          "severity": "medium",
+          "when_to_trigger": "A PR adds success-path logging inside frequently executed or user-facing flows.",
+          "concern": "Check whether the new logs can flood production and whether thresholds or conditional logging are needed.",
+          "evidence_required": "Point to the log site and explain the likely volume trigger.",
+          "example_comment": "Will it cause a flood of logs?",
+          "counterexample": "Skip this if the path is rare or the log is already sampled, rate-limited, or threshold-gated.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10263#discussion_r2867043931",
+              "author": "okJiang",
+              "kind": "review_comment",
+              "path": "pkg/keyspace/keyspace.go",
+              "excerpt": "Will it cause a flood of logs?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10263#discussion_r2867044726",
+              "author": "okJiang",
+              "kind": "review_comment",
+              "path": "pkg/keyspace/keyspace.go",
+              "excerpt": "Maybe it's only necessary to print logs when the duration is greater than a certain value."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "pd-10042-affinity-watcher-lifecycle",
+      "skill_family": "abstractions-and-naming",
+      "secondary_families": [
+        "observability-and-docs",
+        "invariants-and-boundaries"
+      ],
+      "pr_number": 10042,
+      "pr_title": "mcs: add affinity redirect and scheduling watcher ",
+      "pr_url": "https://github.com/tikv/pd/pull/10042",
+      "merged_at": "2026-02-09T09:14:56Z",
+      "subsystem": [
+        "pkg/mcs/scheduling/server/affinity",
+        "server/apiv2/middlewares"
+      ],
+      "review_prompt": "Review this PR as a PD reviewer focusing on watcher lifecycle and redirect plumbing. What reuse, lifecycle, and documentation concerns should be raised before approval?",
+      "expected_min_hits": 2,
+      "expected_concerns": [
+        {
+          "pattern_id": "abstraction.watcher-reuse",
+          "severity": "medium",
+          "when_to_trigger": "A PR adds a new watcher, middleware, or redirect layer in an area that already has similar plumbing.",
+          "concern": "Check whether the new component should reuse existing watcher infrastructure or whether another layer is justified.",
+          "evidence_required": "Point to the new watcher or middleware and name the existing mechanism it overlaps with.",
+          "example_comment": "How about reusing the existing watcher, too many watchers in this repo?",
+          "counterexample": "Skip this if isolation is the intended design and the extra watcher cost is explained.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10042#discussion_r2729994513",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/mcs/scheduling/server/affinity/watcher.go",
+              "excerpt": "How about reusing the existing watcher， too many watchers in  this repo?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10042#discussion_r2739914027",
+              "author": "rleungx",
+              "kind": "review_comment",
+              "path": "server/apiv2/middlewares/microservice_redirector.go",
+              "excerpt": "We have many middleware in different packages, is it possible to reorganize them?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "lifecycle.primary-only-scope",
+          "severity": "medium",
+          "when_to_trigger": "A PR adds server-side background watchers or redirect logic whose ownership may differ between leader/primary and followers.",
+          "concern": "Check whether the component should run only on the primary instance and whether that lifecycle is enforced.",
+          "evidence_required": "Point to the watcher startup path and describe which role owns it.",
+          "example_comment": "Only the primary has this watcher?",
+          "counterexample": "Skip this if the component is explicitly safe and required on all instances.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10042#discussion_r2730066532",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/mcs/scheduling/server/server.go",
+              "excerpt": "Only the primary has this watcher?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "docs.key-comment-required",
+          "severity": "low",
+          "when_to_trigger": "A PR introduces opaque keys or domain-specific identifiers in scheduling logic.",
+          "concern": "Check whether the key format or identifier meaning is documented at the point of use.",
+          "evidence_required": "Point to the key-bearing field or map and explain why the meaning is not obvious from code.",
+          "example_comment": "pls add comment for the key, I think it should be group-id",
+          "counterexample": "Skip this if the key shape is already obvious from type names or documented immediately nearby.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10042#discussion_r2771880698",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/mcs/scheduling/server/affinity/watcher.go",
+              "excerpt": "Which is the key?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10042#discussion_r2771893335",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/schedule/affinity/manager.go",
+              "excerpt": "pls add comment for the key, I think it should be group-id"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "pd-10061-release-branch-affinity-rollout",
+      "skill_family": "compat-and-rollout",
+      "secondary_families": [
+        "observability-and-docs",
+        "abstractions-and-naming"
+      ],
+      "pr_number": 10061,
+      "pr_title": "cherrypick data affinity feature to release-8.5",
+      "pr_url": "https://github.com/tikv/pd/pull/10061",
+      "merged_at": "2025-12-19T08:47:41Z",
+      "subsystem": [
+        "pkg/schedule",
+        "client/http"
+      ],
+      "review_prompt": "Review this release-branch cherry-pick as a PD reviewer. What rollout, retry, and observability concerns should still be raised before approval?",
+      "expected_min_hits": 2,
+      "expected_concerns": [
+        {
+          "pattern_id": "compat.feature-switch-default",
+          "severity": "high",
+          "when_to_trigger": "A PR adds a new scheduler/config parameter on a release branch where other feature gates already exist.",
+          "concern": "Check whether the default value is meaningful or redundant when another feature switch already controls the behavior.",
+          "evidence_required": "Point to the feature gate and the new defaulted parameter and explain the interaction.",
+          "example_comment": "When there is already a switch to control the feature, do we still need to set this default to 0?",
+          "counterexample": "Skip this if the parameter controls a truly separate dimension and its default is documented with rollout rationale.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10061#discussion_r2633409350",
+              "author": "okJiang",
+              "kind": "review_comment",
+              "path": "pkg/schedule/config/config.go",
+              "excerpt": "During normal use, what value will this be set to? In addition, what is the specific function of this parameter? Controlling the rate?"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10061#discussion_r2633471163",
+              "author": "okJiang",
+              "kind": "review_comment",
+              "path": "pkg/schedule/config/config.go",
+              "excerpt": "When there is already a switch to control the feature, do we still need to set this default to 0?"
+            }
+          ]
+        },
+        {
+          "pattern_id": "compat.retry-visible-errors",
+          "severity": "high",
+          "when_to_trigger": "A PR changes return values or force flags on paths that callers retry automatically.",
+          "concern": "Check whether the new error return triggers harmful retries or whether a nil / soft-success response is more appropriate.",
+          "evidence_required": "Point to the caller retry behavior and the changed error return branch.",
+          "example_comment": "If it returns an error, the client will retry the scatter, but it always fails. So we should return nil for the affinity region.",
+          "counterexample": "Skip this if callers do not retry the path or the error is intentionally surfaced for operator intervention.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10061#discussion_r2633395042",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/schedule/scatter/region_scatterer.go",
+              "excerpt": "If it returns an error, the client will retry the scatter, but it always fails. So we should return nil for the affinity region"
+            },
+            {
+              "ref": "https://github.com/tikv/pd/pull/10061#discussion_r2633300301",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "client/http/interface.go",
+              "excerpt": "pls note when we should force or not."
+            }
+          ]
+        },
+        {
+          "pattern_id": "obs.metric-labels",
+          "severity": "medium",
+          "when_to_trigger": "A PR adds new scheduler behavior whose failures need per-group or per-scope visibility.",
+          "concern": "Check whether metrics carry enough labels to isolate which group or feature bucket is misbehaving.",
+          "evidence_required": "Point to the metric definition or update site and explain which dimension is missing.",
+          "example_comment": "We need to add a group label to check which group has problems.",
+          "counterexample": "Skip this if the scope is already encoded in labels or a higher-level metric covers the diagnostic need.",
+          "source_refs": [
+            {
+              "ref": "https://github.com/tikv/pd/pull/10061#discussion_r2633418422",
+              "author": "bufferflies",
+              "kind": "review_comment",
+              "path": "pkg/schedule/affinity/metrics.go",
+              "excerpt": "We need to add a group label to check which group has problems."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

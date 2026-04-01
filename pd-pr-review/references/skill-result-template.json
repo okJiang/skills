@@ -1,0 +1,28 @@
+{
+  "skill": "pd-pr-review-tests",
+  "status": "findings",
+  "confidence": 0.92,
+  "summary": "Touched scheduler behavior without matching regression coverage.",
+  "findings": [
+    {
+      "severity": "blocking",
+      "path": "pkg/schedule/schedulers/hot_region_config.go",
+      "line": 42,
+      "title": "Missing scheduler regression test",
+      "body": "The threshold update changes scheduling behavior without matching regression coverage.",
+      "evidence": [
+        "Scheduler threshold changed in hot_region_config.go",
+        "No schedule regression test changed in the same PR"
+      ],
+      "suggested_check": "go test ./pkg/schedule/..."
+    }
+  ],
+  "checks_run": [
+    {
+      "cmd": "go test ./pkg/schedule/...",
+      "exit_code": 0,
+      "purpose": "Validate the touched schedule package.",
+      "duration_sec": 18
+    }
+  ]
+}

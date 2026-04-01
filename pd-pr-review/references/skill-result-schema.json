@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SkillResult",
+  "type": "object",
+  "required": [
+    "skill",
+    "status",
+    "confidence",
+    "summary",
+    "findings",
+    "checks_run"
+  ],
+  "properties": {
+    "skill": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "findings",
+        "skip",
+        "needs_more_evidence"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "summary": {
+      "type": "string"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "path",
+          "line",
+          "title",
+          "body",
+          "evidence",
+          "suggested_check"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "blocking",
+              "non_blocking",
+              "question"
+            ]
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "suggested_check": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "checks_run": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "cmd",
+          "exit_code",
+          "purpose",
+          "duration_sec"
+        ],
+        "properties": {
+          "cmd": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "duration_sec": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}
