@@ -15,7 +15,7 @@ Use this file to connect the installed PD review skill to the benchmark and eval
 
 - Structured benchmark contract: `benchmark-v1.json`
 
-## Pilot families
+## Eval Families
 
 ### `config-and-compat`
 

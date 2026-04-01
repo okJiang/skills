@@ -482,7 +482,7 @@ def render_case_summary_template(record: Dict[str, Any], plan: Dict[str, Any]) -
         f"# Case Summary for PR #{record['pr_number']}",
         "",
         f"- PR title: {record.get('title', '') or '(fill in if needed)'}",
-        f"- Skill family / selected lanes: {', '.join(plan.get('selected_lanes', [])) or '(none)'}",
+        f"- Eval family / selected lanes: {', '.join(plan.get('selected_lanes', [])) or '(none)'}",
         "- Benchmark or pilot case id: ",
         "- expected_min_hits: ",
         "- hit_count: ",

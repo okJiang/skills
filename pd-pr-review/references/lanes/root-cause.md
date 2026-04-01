@@ -4,7 +4,7 @@ Reuse the same evidence bar as `../reviewer-rules.md`, but emit structured JSON 
 
 ## Workflow
 
-1. Read the linked issue from the orchestrator context.
+1. Read the linked issue when present; otherwise start from the PR body problem statement.
 2. Write down the expected behavior, actual behavior, trigger, and likely root cause.
 3. Independently sketch how you would fix it.
 4. Compare that against the PR diff.

@@ -318,6 +318,43 @@ Add per-keyspace quota support.
 
         self.assertNotIn("root-cause", risk_map["selected_lanes"])
 
+    def test_build_risk_map_does_not_route_root_cause_for_feature_pr_with_issue_link(self) -> None:
+        context = MODULE.normalize_pr_context(
+            pr_number=126,
+            pr_payload={
+                "number": 126,
+                "title": "resource_group: add per-keyspace quota field",
+                "body": """
+### What problem does this PR solve?
+
+Add per-keyspace quota support.
+
+Issue Number: Close #98765
+
+### What is changed and how does it work?
+
+Add a new quota field and thread it through the controller.
+
+### Release note
+
+```release-note
+Add per-keyspace quota support.
+```
+""".strip(),
+                "files": [{"path": "client/resource_group/controller/config.go"}],
+                "baseRefOid": "base-sha",
+                "headRefOid": "head-sha",
+            },
+            issue_payload={"title": "support per-keyspace quota", "body": "new feature request"},
+            diff_text="",
+            codeowners_text="",
+            checks_payload=[],
+        )
+
+        risk_map = MODULE.build_risk_map(context)
+
+        self.assertNotIn("root-cause", risk_map["selected_lanes"])
+
     def test_build_risk_map_routes_abstractions_for_config_rollout_ownership_shift(self) -> None:
         context = MODULE.normalize_pr_context(
             pr_number=10334,

@@ -14,7 +14,7 @@ BLOCKING_THRESHOLD = 0.90
 NON_BLOCKING_THRESHOLD = 0.80
 DEFAULT_COMMAND_BUDGET = 2
 ROOT_CAUSE_MARKER = re.compile(
-    r"\b(bug|fix|fixed|flaky|regression|panic|race|crash|failure|error|incorrect|stale|timeout|deadlock)\b"
+    r"\b(bug|fix|fixes|fixed|fixing|flaky|regression|panic|race|crash|failure|error|incorrect|stale|timeout|deadlock)\b"
 )
 
 BASE_LANES = [
@@ -403,15 +403,13 @@ def _has_invariant_or_boundary_signal(changed_files: Iterable[str]) -> bool:
 def _has_root_cause_signal(context: Dict[str, Any]) -> bool:
     issue = context.get("issue_summary", {})
     body_sections = context.get("pr_body_sections", {})
-    if str(issue.get("title", "")).strip():
-        return True
-    if str(issue.get("body", "")).strip():
-        return True
     signal_text = "\n".join(
         [
             str(context.get("title", "")),
             str(body_sections.get("problem_statement", "")),
             str(body_sections.get("change_summary", "")),
+            str(issue.get("title", "")),
+            str(issue.get("body", "")),
         ]
     ).lower()
     return bool(ROOT_CAUSE_MARKER.search(signal_text))
