@@ -53,7 +53,7 @@ See `references/shadow-review-bundle-template.md` for the stable artifact layout
 ## Per-PR Workflow
 
 1. Prepare the batch bundle and inspect `batch-manifest.json`.
-2. Fill each selected lane output as one `SkillResult` JSON file next to its `.template.json` starter.
+2. Fill each selected lane output as one lane-result JSON file next to its `.template.json` starter.
 3. Run the arbiter capture command so `arbiter/decision.json` is recorded for the PR bundle.
 4. Score the run in `evaluation/manual-score.csv` using the shared scorecard contract.
    - For unmatched `miss` rows, leave `model_finding_ref`, `claimed_severity`, and `skill_status` blank.

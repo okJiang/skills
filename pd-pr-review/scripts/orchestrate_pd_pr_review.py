@@ -74,6 +74,7 @@ def main() -> int:
         "risk_map": risk_map,
         "selected_lanes": risk_map["selected_lanes"],
         "suggested_checks": risk_map["suggested_checks"],
+        "lane_suggested_checks": risk_map["lane_suggested_checks"],
         "result_schema": str(
             (Path(__file__).resolve().parents[1] / "references" / "skill-result-schema.json")
         ),

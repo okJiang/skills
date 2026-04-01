@@ -4,9 +4,12 @@ Use this file to connect the installed PD review skill to the benchmark and eval
 
 ## Shared rule
 
-- Benchmark cases calibrate what the family should catch.
+- Benchmark cases calibrate what an eval family should catch.
 - Online review must still reason from the current PR independently.
 - Passing the pilot means hitting the right concerns with current-diff evidence, not echoing historical wording.
+- Runtime lanes and eval families are related but not identical:
+  - runtime lanes drive actual review routing,
+  - eval families are offline score buckets used for replay and comparison.
 
 ## Benchmark source
 
@@ -38,18 +41,18 @@ Use this file to connect the installed PD review skill to the benchmark and eval
 ### `agent-artifacts`
 
 - Current pilot mode:
-  - checklist-only dry-run using `references/checklist.md`
+  - checklist-only dry-run using `references/lanes/agent-artifacts-checklist.md`
   - no dedicated benchmark case yet
 - Pass rule:
   - catch truthfulness, context-budget, and generic-wording problems from the current diff
 
 ## Dry-run flow
 
-1. Pick one lane or family owner.
-2. Pick one benchmark case for that family.
-3. Review the case or current PR and emit one `SkillResult` JSON file.
+1. Pick one runtime lane to test.
+2. Pick one benchmark case from the matching eval family.
+3. Review the case or current PR and emit one lane-result JSON file.
 4. Check whether the output:
    - hits at least `expected_min_hits`
    - uses current-diff evidence
    - follows `blocking / non_blocking / question` from `reviewer-rules.md`
-5. Only then wire the family into broader pilot usage.
+5. Only then wire that lane into broader pilot usage.

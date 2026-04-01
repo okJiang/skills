@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Turn SkillResult JSON into dry-run output or GitHub comments."""
+"""Turn lane result JSON into dry-run output or GitHub comments."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import subprocess
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -15,16 +16,21 @@ from pd_pr_review_framework import arbitrate_skill_results
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Dry-run or post PD PR review comments from SkillResult JSON files."
+        description="Dry-run or post PD PR review comments from lane result JSON files."
     )
     parser.add_argument("--context-json", required=True, help="Normalized context JSON file.")
     parser.add_argument(
         "--result-json",
         action="append",
         default=[],
-        help="SkillResult JSON file. Pass this flag multiple times.",
+        help="Lane result JSON file. Pass this flag multiple times.",
     )
     parser.add_argument("--post", action="store_true", help="Post comments through gh.")
+    parser.add_argument(
+        "--user-approved",
+        action="store_true",
+        help="Required together with --post to confirm explicit user approval.",
+    )
     return parser.parse_args()
 
 
@@ -32,12 +38,16 @@ def main() -> int:
     args = parse_args()
     context_payload = json.loads(Path(args.context_json).read_text(encoding="utf-8"))
     context = context_payload.get("context", context_payload)
-    skill_results = [json.loads(Path(path).read_text(encoding="utf-8")) for path in args.result_json]
-    decision = arbitrate_skill_results(context=context, skill_results=skill_results)
+    lane_results = [json.loads(Path(path).read_text(encoding="utf-8")) for path in args.result_json]
+    decision = arbitrate_skill_results(context=context, lane_results=lane_results)
 
     if not args.post:
         print(json.dumps(decision, indent=2, sort_keys=True))
         return 0
+
+    if not args.user_approved:
+        print("Error: posting requires --user-approved.", file=sys.stderr)
+        return 1
 
     repo_root = Path(context.get("repo_path", ""))
     pr_number = context.get("pr_number")
@@ -74,7 +84,7 @@ def post_comments(
 
     for comment in comments:
         if comment["delivery"] == "summary":
-            summary_groups[comment["skill"]].append(comment)
+            summary_groups[comment["lane"]].append(comment)
             continue
         body = render_comment_body(comment)
         result = subprocess.run(
@@ -108,8 +118,8 @@ def post_comments(
                 }
             )
 
-    for skill, grouped_comments in summary_groups.items():
-        body = render_summary_body(skill, grouped_comments)
+    for lane, grouped_comments in summary_groups.items():
+        body = render_summary_body(lane, grouped_comments)
         result = subprocess.run(
             ["gh", "pr", "comment", str(pr_number), "--body", body],
             cwd=repo_root,
@@ -119,7 +129,7 @@ def post_comments(
         if result.returncode != 0:
             failures.append(
                 {
-                    "skill": skill,
+                    "lane": lane,
                     "stderr": result.stderr.strip(),
                     "stdout": result.stdout.strip(),
                 }
@@ -139,8 +149,8 @@ def render_comment_body(comment: Dict[str, Any]) -> str:
     )
 
 
-def render_summary_body(skill: str, comments: Iterable[Dict[str, Any]]) -> str:
-    chunks = [f"### {skill}"]
+def render_summary_body(lane: str, comments: Iterable[Dict[str, Any]]) -> str:
+    chunks = [f"### {lane}"]
     for comment in comments:
         evidence = "; ".join(comment.get("evidence", []))
         chunks.append(

@@ -117,6 +117,7 @@ class PrepareRunBundleTests(unittest.TestCase):
                 "tests",
             ],
             "suggested_checks": ["go test ./pkg/schedule/..."],
+            "lane_suggested_checks": {"tests": ["go test ./pkg/schedule/..."]},
             "risk_map": {"command_budget": 2},
         }
 

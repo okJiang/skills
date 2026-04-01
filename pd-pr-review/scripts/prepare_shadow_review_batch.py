@@ -304,6 +304,7 @@ def prepare_run_bundle(run_dir: Path, record: Dict[str, Any], plan: Dict[str, An
         "artifact_dir": str(run_dir),
         "plan_path": str(run_dir / "plan.json"),
         "review_lanes": selected_lanes,
+        "lane_suggested_checks": plan.get("lane_suggested_checks", {}),
         "command_budget": plan.get("risk_map", {}).get("command_budget"),
         "suggested_checks": plan.get("suggested_checks", []),
         "arbiter_dry_run_command": arbiter_command,
@@ -314,12 +315,12 @@ def prepare_run_bundle(run_dir: Path, record: Dict[str, Any], plan: Dict[str, An
     }
 
 
-def build_result_template(skill: str) -> Dict[str, Any]:
+def build_result_template(lane: str) -> Dict[str, Any]:
     return {
-        "skill": skill,
+        "lane": lane,
         "status": "skip",
         "confidence": 0.0,
-        "summary": "Template placeholder. Replace with the actual skill output before arbiter dry-run.",
+        "summary": "Template placeholder. Replace with the actual lane output before arbiter dry-run.",
         "findings": [],
         "checks_run": [],
     }
@@ -367,7 +368,7 @@ def render_batch_readme(manifest: Dict[str, Any]) -> str:
             "- `batch-manifest.json`: machine-readable list of selected PRs and generated artifact paths.",
             "- `pr-<number>/source-record.json`: aggregated corpus or direct-selection metadata for the PR.",
             "- `pr-<number>/plan.json`: orchestrator output for the PR.",
-            "- `pr-<number>/lane-results/*.template.json`: starter `SkillResult` payloads for each review lane.",
+            "- `pr-<number>/lane-results/*.template.json`: starter lane-result payloads for each review lane.",
             "- `pr-<number>/arbiter/`: dry-run command, capture command, and arbiter output placeholders.",
             "- `pr-<number>/evaluation/`: manual score sheet and case-level verdict summary aligned to the shared scorecard contract.",
             "- `pr-<number>/notes/`: narrative shadow summary placeholder.",
@@ -388,7 +389,7 @@ def render_lane_readme(
     lines = [
         f"# Lane Results for PR #{pr_number}",
         "",
-        "Fill one `SkillResult` JSON file per selected review lane.",
+        "Fill one lane-result JSON file per selected review lane.",
         "",
         "## Selected lanes",
     ]
@@ -462,7 +463,7 @@ def render_final_comments_template() -> str:
     return (
         "# Final Proposed Comments\n\n"
         "- Fill from `arbiter/decision.json` after the dry-run command is captured.\n"
-        "- Group comments by root cause or skill when that improves readability.\n"
+        "- Group comments by root cause or lane when that improves readability.\n"
     )
 
 

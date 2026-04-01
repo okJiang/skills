@@ -1,9 +1,4 @@
----
-name: pd-pr-review-agent-artifacts
-description: Use when a tikv/pd PR changes `.agents/skills/**`, `AGENTS.md`, or other AI-facing reviewer assets and needs checks for context budget, truthfulness, generic wording, and progressive disclosure.
----
-
-# PD PR Review Agent Artifacts
+# Agent Artifacts Lane
 
 Review AI-facing artifacts as product surfaces for future agents, not as ordinary markdown-only docs.
 
@@ -23,7 +18,7 @@ Reuse `../reviewer-rules.md` so this lane stays on the same question-driven, sev
 - Use `non_blocking` for wording, structure, or genericity improvements when the workflow is otherwise sound.
 - Keep taxonomy, severity, and question-driven wording aligned with the shared rubric; do not invent a second review dialect just because the files are AI-facing.
 - Reuse `/Users/jiangxianjie/.codex/skills/.system/skill-creator/SKILL.md` as the baseline standard.
-- Emit one `SkillResult` JSON file matching `../skill-result-schema.json`.
+- Emit one lane-result JSON file matching `../skill-result-schema.json`.
 
 ## Resources
 

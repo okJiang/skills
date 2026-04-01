@@ -2,6 +2,8 @@
 
 Use this file to map the current PR onto internal review lanes.
 
+This file is the human-readable summary. `scripts/pd_pr_review_framework.py` is the executable source of truth.
+
 ## Core Lanes
 
 ### `metadata`
@@ -12,11 +14,12 @@ Use this file to map the current PR onto internal review lanes.
 
 - Review whether the patch has regression proof for the claimed behavior, trigger path, or root cause.
 
+## Routed Lanes
+
 ### `root-cause`
 
-- Add this lane only when the plan has a linked issue or a concrete problem statement that can be checked against the diff.
-
-## Routed Lanes
+- Trigger shape: linked issue, explicit bugfix, flaky fix, regression repair, or another failure path that can be checked against the diff.
+- Do not add this lane for ordinary feature PRs that only have a generic problem statement.
 
 ### `config-and-compat`
 
@@ -49,6 +52,7 @@ Use this file to map the current PR onto internal review lanes.
 ## Selection Rules
 
 - Use history only as calibration. The current diff decides the active lanes.
+- Treat `root-cause` as a conditional lane, not a default lane.
 - If a config or rollout PR crosses API plus controller or manager ownership boundaries, add `abstractions-and-naming` alongside `config-and-compat`.
 - If a scheduler change also touches callback ordering, nil/no-op paths, or lifecycle boundaries, add `invariants-and-boundaries` alongside `schedule-hotpath`.
 - If a TSO or MCS change also shifts user-facing defaults or config exposure, add `config-and-compat` alongside `tso-and-mcs`.

@@ -1,9 +1,4 @@
----
-name: pd-pr-review-invariants-and-boundaries
-description: Use when a tikv/pd PR changes locks, retries, nil/error handling, background jobs, watchers, or subtle runtime guards and needs reviewer-style invariant and boundary analysis.
----
-
-# PD PR Review Invariants And Boundaries
+# Invariants And Boundaries Lane
 
 Review current diff behavior, not abstract code style, and explain what invariant or boundary condition the code is relying on.
 
@@ -21,7 +16,7 @@ Review current diff behavior, not abstract code style, and explain what invarian
 - Use `blocking` only for concrete boundary or invariant risks.
 - Question wording does not lower severity.
 - Historical questions are calibration only; ground the finding in the current diff.
-- Emit one `SkillResult` JSON file matching `../skill-result-schema.json`.
+- Emit one lane-result JSON file matching `../skill-result-schema.json`.
 
 ## Resources
 

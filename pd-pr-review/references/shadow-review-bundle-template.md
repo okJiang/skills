@@ -41,5 +41,5 @@ Use this as the canonical layout for a Phase 3 shadow-review artifact bundle.
 ## Ground rules
 
 - Do not create a second plan format beside `plan.json`.
-- Keep `SkillResult` payloads grounded in the current PR; historical review data remains offline calibration only.
+- Keep lane-result payloads grounded in the current PR; historical review data remains offline calibration only.
 - Treat the manual comparison notes as narrative only; the formal row schema lives in the shared scorecard contract.

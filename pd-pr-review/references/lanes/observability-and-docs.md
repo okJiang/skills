@@ -1,9 +1,4 @@
----
-name: pd-pr-review-observability-and-docs
-description: Use when a tikv/pd PR adds behavior that should be debuggable in production and needs review for metrics, logs, labels, and intent comments.
----
-
-# PD PR Review Observability And Docs
+# Observability And Docs Lane
 
 Check whether the new behavior can be understood and debugged by operators after it ships.
 
@@ -20,7 +15,7 @@ Check whether the new behavior can be understood and debugged by operators after
 - Use `blocking` for objective API-doc drift or a real observability gap that can hide production failures.
 - Use `non_blocking` for comment or clarity improvements when the runtime behavior is already observable enough.
 - If the code is self-explanatory and operationally visible, return `pass` instead of inventing docs work.
-- Emit one `SkillResult` JSON file matching `../skill-result-schema.json`.
+- Emit one lane-result JSON file matching `../skill-result-schema.json`.
 
 ## Resources
 

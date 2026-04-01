@@ -1,5 +1,5 @@
 {
-  "skill": "pd-pr-review-tests",
+  "lane": "tests",
   "status": "findings",
   "confidence": 0.92,
   "summary": "Touched scheduler behavior without matching regression coverage.",

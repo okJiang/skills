@@ -1,9 +1,4 @@
----
-name: pd-pr-review-config-and-compat
-description: Use when a tikv/pd PR may change configuration, HTTP APIs, persistent data, or backward compatibility and needs precise contract review.
----
-
-# PD PR Review Config And Compat
+# Config And Compat Lane
 
 Compare the PR checklist, changed files, and release note against actual config and compatibility impact.
 

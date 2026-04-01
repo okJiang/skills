@@ -32,13 +32,14 @@ python3 scripts/orchestrate_pd_pr_review.py \
 ```
 
 3. Read `/tmp/pd_pr_review_plan.json`, `references/reviewer-rules.md`, and `references/lane-selection.md`.
-4. Spawn one read-only review sub-agent per selected lane. Each sub-agent gets:
+4. Spawn one review sub-agent per selected lane. Each sub-agent gets:
    - the normalized context JSON,
    - one lane reference from `references/lanes/`,
    - `references/skill-result-schema.json`,
-   - at most the shared `command_budget`.
+   - file-read access for review,
+   - only the lane-specific validation commands explicitly assigned in `lane_suggested_checks`.
 5. Save one JSON result per lane under `lane-results/`.
-6. Use lane names as the result `skill` values, for example `metadata` or `schedule-hotpath`.
+6. Use lane names as the result `lane` values, for example `metadata` or `schedule-hotpath`.
 7. Review the returned JSON files locally. Drop duplicate or weak findings before arbitration.
 8. Dry-run the arbiter.
 
@@ -56,6 +57,8 @@ python3 scripts/arbitrate_pd_pr_review.py \
 - This is the only installed PD review skill. Do not invoke legacy `pd-pr-review-*` specialist skills.
 - Historical PR data and replay notes are offline calibration only. Do not load pilot or shadow material during routine review.
 - Each sub-agent reviews exactly one lane. Do not let one lane drift into another lane's contract.
+- `command_budget` is a shared cap for the whole review, not a per-lane allowance.
+- A sub-agent may run only the commands explicitly assigned to its lane. No assigned commands means pure read-only review.
 - Run `root-cause` only when the plan selected it.
 - Respect the returned `command_budget`. `docs-only` PRs get zero runtime checks.
 - Never post GitHub comments without explicit user approval.

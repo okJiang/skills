@@ -202,7 +202,7 @@ class NormalizeContextTests(unittest.TestCase):
 
 
 class RiskMapTests(unittest.TestCase):
-    def test_build_risk_map_selects_domain_skills_and_caps_validation_budget(self) -> None:
+    def test_build_risk_map_selects_domain_lanes_and_caps_validation_budget(self) -> None:
         context = MODULE.normalize_pr_context(
             pr_number=123,
             pr_payload={
@@ -248,6 +248,13 @@ class RiskMapTests(unittest.TestCase):
             ],
             risk_map["suggested_checks"],
         )
+        self.assertEqual(
+            {
+                "schedule-hotpath": ["go test ./pkg/schedule/..."],
+                "tso-and-mcs": ["make test-tso-function"],
+            },
+            risk_map["lane_suggested_checks"],
+        )
 
     def test_build_risk_map_skips_runtime_checks_for_docs_only_pr(self) -> None:
         context = MODULE.normalize_pr_context(
@@ -274,6 +281,42 @@ diff --git a/docs/design/review.md b/docs/design/review.md
 
         self.assertEqual(["docs-only"], risk_map["risk_tags"])
         self.assertEqual([], risk_map["suggested_checks"])
+        self.assertEqual({}, risk_map["lane_suggested_checks"])
+
+    def test_build_risk_map_does_not_route_root_cause_for_generic_feature_pr(self) -> None:
+        context = MODULE.normalize_pr_context(
+            pr_number=125,
+            pr_payload={
+                "number": 125,
+                "title": "resource_group: add per-keyspace quota field",
+                "body": """
+### What problem does this PR solve?
+
+Add per-keyspace quota support.
+
+### What is changed and how does it work?
+
+Add a new quota field and thread it through the controller.
+
+### Release note
+
+```release-note
+Add per-keyspace quota support.
+```
+""".strip(),
+                "files": [{"path": "client/resource_group/controller/config.go"}],
+                "baseRefOid": "base-sha",
+                "headRefOid": "head-sha",
+            },
+            issue_payload=None,
+            diff_text="",
+            codeowners_text="",
+            checks_payload=[],
+        )
+
+        risk_map = MODULE.build_risk_map(context)
+
+        self.assertNotIn("root-cause", risk_map["selected_lanes"])
 
     def test_build_risk_map_routes_abstractions_for_config_rollout_ownership_shift(self) -> None:
         context = MODULE.normalize_pr_context(
@@ -339,9 +382,9 @@ class CommentArbiterTests(unittest.TestCase):
 
         decision = MODULE.arbitrate_skill_results(
             context=context,
-            skill_results=[
+            lane_results=[
                 {
-                    "skill": "schedule-hotpath",
+                    "lane": "schedule-hotpath",
                     "status": "findings",
                     "confidence": 0.95,
                     "summary": "scheduler issue found",
@@ -369,7 +412,7 @@ class CommentArbiterTests(unittest.TestCase):
                     ],
                 },
                 {
-                    "skill": "tests",
+                    "lane": "tests",
                     "status": "findings",
                     "confidence": 0.93,
                     "summary": "same issue from test coverage angle",
@@ -399,7 +442,7 @@ class CommentArbiterTests(unittest.TestCase):
                     "checks_run": [],
                 },
                 {
-                    "skill": "config-and-compat",
+                    "lane": "config-and-compat",
                     "status": "findings",
                     "confidence": 0.79,
                     "summary": "low-confidence config suggestion",
@@ -453,9 +496,9 @@ class CommentArbiterTests(unittest.TestCase):
 
         decision = MODULE.arbitrate_skill_results(
             context=context,
-            skill_results=[
+            lane_results=[
                 {
-                    "skill": "config-and-compat",
+                    "lane": "config-and-compat",
                     "status": "findings",
                     "confidence": 0.95,
                     "summary": "compat issue found",
@@ -476,7 +519,7 @@ class CommentArbiterTests(unittest.TestCase):
                     "checks_run": [],
                 },
                 {
-                    "skill": "tests",
+                    "lane": "tests",
                     "status": "findings",
                     "confidence": 0.91,
                     "summary": "same root cause from test angle",
@@ -510,7 +553,7 @@ class CommentArbiterTests(unittest.TestCase):
         )
         self.assertEqual([], decision["local_only_findings"])
 
-    def test_build_risk_map_adds_agent_artifact_skill_for_agent_files(self) -> None:
+    def test_build_risk_map_adds_agent_artifact_lane_for_agent_files(self) -> None:
         context = MODULE.normalize_pr_context(
             pr_number=200,
             pr_payload={

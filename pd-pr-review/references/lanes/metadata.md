@@ -1,9 +1,4 @@
----
-name: pd-pr-review-metadata
-description: Use when a tikv/pd PR needs high-confidence checks for linked issues, template completeness, release notes, and checklist versus diff consistency.
----
-
-# PD PR Review Metadata
+# Metadata Lane
 
 Review only the stable PR contract: linked issue, checklist declarations, release note, and whether the written scope matches the diff.
 
@@ -23,5 +18,5 @@ Review only the stable PR contract: linked issue, checklist declarations, releas
 
 - Only emit `blocking` for objective mismatches that a maintainer can verify from the PR alone.
 - Do not comment on wording style, English quality, or formatting nits.
-- If the PR body is incomplete and the diff is ambiguous, set `SkillResult.status = needs_more_evidence` instead of guessing or inventing a fourth severity.
-- Output one `SkillResult` JSON file, not prose.
+- If the PR body is incomplete and the diff is ambiguous, set `status = needs_more_evidence` instead of guessing or inventing a fourth severity.
+- Output one lane-result JSON file, not prose.

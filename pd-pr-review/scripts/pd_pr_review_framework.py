@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared helpers for the local PD PR review skill suite."""
+"""Shared helpers for the local PD PR review skill."""
 
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ from typing import Any, Dict, Iterable, List, Optional
 BLOCKING_THRESHOLD = 0.90
 NON_BLOCKING_THRESHOLD = 0.80
 DEFAULT_COMMAND_BUDGET = 2
+ROOT_CAUSE_MARKER = re.compile(
+    r"\b(bug|fix|fixed|flaky|regression|panic|race|crash|failure|error|incorrect|stale|timeout|deadlock)\b"
+)
 
 BASE_LANES = [
     "metadata",
@@ -259,7 +262,7 @@ def build_risk_map(context: Dict[str, Any]) -> Dict[str, Any]:
     body_sections = context.get("pr_body_sections", {})
     risk_tags: List[str] = []
     selected_lanes = list(BASE_LANES)
-    suggested_checks: List[str] = []
+    lane_check_candidates: List[tuple[str, str]] = []
     command_budget = DEFAULT_COMMAND_BUDGET
 
     if _has_root_cause_signal(context):
@@ -274,14 +277,15 @@ def build_risk_map(context: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "risk_tags": risk_tags,
             "selected_lanes": ["metadata"],
-            "suggested_checks": suggested_checks,
+            "suggested_checks": [],
+            "lane_suggested_checks": {},
             "command_budget": command_budget,
         }
 
     if any(path.startswith("pkg/schedule/") for path in changed_files):
         risk_tags.append("schedule-hotpath")
         selected_lanes.append("schedule-hotpath")
-        suggested_checks.append("go test ./pkg/schedule/...")
+        lane_check_candidates.append(("schedule-hotpath", "go test ./pkg/schedule/..."))
 
     if _has_invariant_or_boundary_signal(changed_files):
         risk_tags.append("invariants-and-boundaries")
@@ -290,13 +294,13 @@ def build_risk_map(context: Dict[str, Any]) -> Dict[str, Any]:
     if _has_config_or_compat_signal(changed_files, body_sections):
         risk_tags.append("config-change")
         selected_lanes.append("config-and-compat")
-        if not suggested_checks:
-            suggested_checks.append("go test ./server/...")
+        if not lane_check_candidates:
+            lane_check_candidates.append(("config-and-compat", "go test ./server/..."))
 
     if _has_tso_or_mcs_signal(changed_files):
         risk_tags.append("tso-or-mcs")
         selected_lanes.append("tso-and-mcs")
-        suggested_checks.append("make test-tso-function")
+        lane_check_candidates.append(("tso-and-mcs", "make test-tso-function"))
 
     if _has_observability_signal(changed_files):
         risk_tags.append("observability-and-docs")
@@ -316,14 +320,18 @@ def build_risk_map(context: Dict[str, Any]) -> Dict[str, Any]:
             deduped_lanes.append(lane)
 
     deduped_checks: List[str] = []
-    for command in suggested_checks:
-        if command not in deduped_checks:
-            deduped_checks.append(command)
+    lane_suggested_checks: Dict[str, List[str]] = {}
+    for lane, command in lane_check_candidates:
+        if command in deduped_checks or len(deduped_checks) >= command_budget:
+            continue
+        deduped_checks.append(command)
+        lane_suggested_checks.setdefault(lane, []).append(command)
 
     return {
         "risk_tags": risk_tags,
         "selected_lanes": deduped_lanes,
         "suggested_checks": deduped_checks[:command_budget],
+        "lane_suggested_checks": lane_suggested_checks,
         "command_budget": command_budget,
     }
 
@@ -399,16 +407,21 @@ def _has_root_cause_signal(context: Dict[str, Any]) -> bool:
         return True
     if str(issue.get("body", "")).strip():
         return True
-    return bool(str(body_sections.get("problem_statement", "")).strip())
+    signal_text = "\n".join(
+        [
+            str(context.get("title", "")),
+            str(body_sections.get("problem_statement", "")),
+            str(body_sections.get("change_summary", "")),
+        ]
+    ).lower()
+    return bool(ROOT_CAUSE_MARKER.search(signal_text))
 
 
 def _has_observability_signal(changed_files: Iterable[str]) -> bool:
-    keywords = ("metric", "metrics", "log", "logger", "trace")
+    keywords = ("metric", "metrics", "log", "logger", "trace", "swagger", "openapi", "annotation")
     for path in changed_files:
         lowered = path.lower()
         if any(keyword in lowered for keyword in keywords):
-            return True
-        if "/api/" in lowered or lowered.startswith("server/api") or lowered.endswith("api.go"):
             return True
     return False
 
@@ -453,13 +466,14 @@ def _has_abstraction_or_naming_signal(
 
 def arbitrate_skill_results(
     context: Dict[str, Any],
-    skill_results: Iterable[Dict[str, Any]],
+    lane_results: Iterable[Dict[str, Any]],
 ) -> Dict[str, Any]:
     deduped_postable_comments: Dict[tuple[Any, ...], Dict[str, Any]] = {}
     local_only_findings: List[Dict[str, Any]] = []
 
-    for result in skill_results:
+    for result in lane_results:
         result_confidence = float(result.get("confidence", 0.0))
+        lane_name = result.get("lane") or result.get("skill")
         for finding in result.get("findings", []):
             severity = finding.get("severity", "")
             reason = _local_only_reason(finding, result_confidence)
@@ -467,7 +481,7 @@ def arbitrate_skill_results(
                 local_only_findings.append(
                     {
                         "reason": reason,
-                        "skill": result.get("skill"),
+                        "lane": lane_name,
                         "title": finding.get("title"),
                         "severity": severity,
                     }
@@ -487,7 +501,7 @@ def arbitrate_skill_results(
                 finding.get("title"),
             )
             candidate_comment = {
-                "skill": result.get("skill"),
+                "lane": lane_name,
                 "severity": severity,
                 "delivery": delivery,
                 "path": path,

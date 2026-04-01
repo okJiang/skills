@@ -1,9 +1,4 @@
----
-name: pd-pr-review-tso-and-mcs
-description: Use when a tikv/pd PR touches TSO or MCS code paths and needs domain-specific review for timing, defaults, failover, and config exposure.
----
-
-# PD PR Review TSO And MCS
+# TSO And MCS Lane
 
 Review `pkg/mcs/**`, TSO-related tests, and nearby client paths with TSO semantics in mind.
 
