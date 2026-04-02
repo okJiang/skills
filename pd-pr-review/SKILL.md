@@ -1,74 +1,116 @@
 ---
 name: pd-pr-review
-description: Use when reviewing a tikv/pd pull request end-to-end through one installed skill that routes lanes and coordinates sub-agents directly.
+description: Review tikv/pd pull requests end-to-end by routing the current PD PR through focused review lanes, checking issue or root-cause coverage, test strength, and lane-specific risks, then drafting local review comments before anything is posted to GitHub. Use when the user asks to review a PD PR, verify whether a PD fix truly solves the reported issue, inspect regression or test coverage on a tikv/pd pull request, or prepare review comments from a PD PR number or URL.
 ---
 
 # PD PR Review
 
-This is the single installed PD review skill for `tikv/pd`.
-
-Keep one public entrypoint, but split the actual review into focused internal lanes.
-
-Do not rely on runtime orchestration scripts. The main agent collects context, chooses lanes, and arbitrates findings directly.
+Review a tikv/pd pull request end-to-end by routing the current PR through focused internal lanes, then consolidating evidence-backed findings into a local draft before any GitHub comment is posted.
 
 ## Inputs
 
 - Local `tikv/pd` checkout
 - PR number or URL
+- Optional user intent: local draft only, or publish after approval
+
+## Shared Runtime Resources
+
+Load these before lane selection:
+
+- `references/reviewer-rules.md`
+- `references/review-principles.md`
+- `references/lane-selection.md`
+
+Lane resources:
+
+- Load exactly one primary lane file from `references/lanes/` for each active lane.
+- Load an optional `*-question-patterns.md` or `*-checklist.md` helper only when that lane is active and the current PR needs deeper prompts or a finishing checklist.
+
+Offline-only calibration:
+
+- `references/offline-calibration.md`
+- `references/benchmark-v1.json`
+- `references/shadow-pr-corpus.jsonl`
+- `evals/description-queries.json`
+- `evals/review-cases.json`
+- `scripts/validate_pd_pr_review.py`
+
+Do not load offline calibration files during routine review.
 
 ## Workflow
 
-1. Verify GitHub auth.
-
-```bash
-gh auth status
-```
-
-2. Collect the current PR context directly from GitHub and the local checkout.
-
-```bash
-gh pr view 12345 --json number,title,body,author,baseRefName,headRefName,files,commits,labels,url,reviewDecision
-gh pr diff 12345 --patch
-gh pr checks 12345 --json name,state,bucket,link
-```
-
-If the PR links an issue that shapes expected behavior or scope, read that issue directly before routing `metadata` or `root-cause`.
-
-3. Read `references/reviewer-rules.md`, `references/review-principles.md`, and `references/lane-selection.md`.
-4. Choose the active lanes from the current PR.
+1. Verify prerequisites.
+   - Run `gh auth status`.
+   - Run `git rev-parse --show-toplevel`.
+   - Stop if GitHub auth is invalid or the checkout is not `tikv/pd`.
+2. Collect PR context.
+   - Read `gh pr view` output.
+   - Read `gh pr diff` output.
+   - Read `gh pr checks` output.
+   - If the PR links an issue, flaky report, or explicit incident, read that before lane selection.
+3. Select lanes.
    - Always include `metadata` and `tests`.
-   - Add routed lanes only when the current diff, PR body, or linked issue clearly matches that lane.
-5. Spawn one review sub-agent per active lane. Each sub-agent gets:
-   - the PR number or URL,
-   - the relevant files or diff hunks,
-   - one lane reference from `references/lanes/`,
-   - the shared rules from `references/reviewer-rules.md`.
-6. Let each sub-agent inspect the repo and return one concise lane note with:
+   - Add routed lanes only when the current diff, touched paths, PR body, or linked issue clearly matches the lane trigger.
+   - Record one short reason per selected lane.
+4. Spawn one subagent per active lane.
+   Each lane gets only:
+   - the PR identifier
+   - the minimum diff or file context needed for that lane
+   - the shared reviewer rules
+   - one primary lane file
+   - one optional helper file, only if needed
+5. Collect lane notes.
+   Each lane note must contain:
    - `Lane`
-   - `Status`: `pass`, `findings`, or `needs_more_evidence`
+   - `Status`
    - `Checks Run`
-   - `Findings`: zero or more evidence-backed items using `blocking`, `non_blocking`, or `question`
-7. Review the returned lane notes locally. Drop duplicate or weak findings before writing review comments.
-8. Draft the review locally first. Post only if the user explicitly asked to publish comments.
+   - `Findings`
+6. Consolidate locally.
+   - Deduplicate overlapping findings.
+   - Keep each concern in the lane with the clearest contract ownership.
+   - Drop weak or speculative findings.
+   - Reuse command output across lanes instead of rerunning the same check.
+7. Draft the local review.
+   - Fill the output contract below.
+   - Keep GitHub comment drafts local.
+8. Publish gate.
+   - Never post GitHub comments unless the user explicitly approves the exact local draft in this session.
+   - If the user only asked for review, stop at the local draft.
+9. Runtime validation.
+   - Treat commands as a shared budget across the whole review.
+   - Choose the narrowest repo command that resolves one concrete uncertainty.
+   - `docs-only` PRs stay read-only unless the user explicitly asked for deeper validation.
+
+## Local Output Contract
+
+Produce these sections in order:
+
+1. `PR Context`
+2. `Active Lanes`
+3. `Lane Notes`
+4. `Consolidated Findings`
+5. `Open Questions / Needs More Evidence`
+6. `Draft Review Comments`
 
 ## Hard Rules
 
 - This is the only installed PD review skill. Do not invoke legacy `pd-pr-review-*` specialist skills.
-- Historical PR data and replay notes are offline calibration only. Do not load pilot or shadow material during routine review.
-- Each sub-agent reviews exactly one lane. Do not let one lane drift into another lane's contract.
-- Treat runtime validation as a shared review budget. Keep it to the minimum needed to resolve concrete uncertainty.
-- Reuse command output across lanes instead of rerunning the same check from multiple sub-agents.
-- `docs-only` PRs should stay read-only unless the user asked for deeper verification.
-- Run `root-cause` only when the current PR clearly presents a bugfix, regression, flaky fix, or another concrete failure path.
-- Never post GitHub comments without explicit user approval.
-- Treat `references/reviewer-rules.md` and `references/lane-selection.md` as the source of truth.
+- Do not rely on runtime orchestration scripts. The main agent routes lanes and arbitrates findings directly.
+- Each subagent reviews exactly one lane.
+- `root-cause` is conditional. Use it only for explicit bugfix, regression, flaky-fix, or another concrete failure path.
+- `agent-artifacts` can apply even to markdown-only or AI-facing changes.
+- Historical PR material is offline calibration only. Do not load it during routine review.
+- `references/reviewer-rules.md` and `references/lane-selection.md` are the runtime source of truth.
+- Never post GitHub comments without explicit approval of the exact local draft.
 
-## Core Lanes
+## Active Lanes
+
+Core lanes:
 
 - `metadata`
 - `tests`
 
-## Routed Lanes
+Routed lanes:
 
 - `root-cause`
 - `config-and-compat`
@@ -79,10 +121,10 @@ If the PR links an issue that shapes expected behavior or scope, read that issue
 - `abstractions-and-naming`
 - `agent-artifacts`
 
-## Resources
+## Skill Maintenance
 
-- Shared rules: `references/reviewer-rules.md`
-- Review principles: `references/review-principles.md`
-- Lane selection: `references/lane-selection.md`
-- Lanes: `references/lanes/`
-- Offline calibration notes: `references/offline-calibration.md`
+Use the eval fixtures and validator only when refining `pd-pr-review` itself:
+
+- Trigger boundary checks: `evals/description-queries.json`
+- Output-contract checks: `evals/review-cases.json`
+- Static validator: `scripts/validate_pd_pr_review.py`
