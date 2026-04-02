@@ -16,7 +16,6 @@ Check whether the new abstraction makes the behavior clearer, or only moves comp
 - Prefer `blocking` only when the abstraction obscures real behavior or increases contract risk.
 - Use `non_blocking` for cleanup, naming precision, or deduplication suggestions once behavior is otherwise sound.
 - If the refactor is behavior-preserving and makes ownership clearer, return `pass`.
-- Emit one lane-result JSON file matching `../skill-result-schema.json`.
 
 ## Resources
 

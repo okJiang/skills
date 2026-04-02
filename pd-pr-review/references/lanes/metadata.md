@@ -4,8 +4,8 @@ Review only the stable PR contract: linked issue, checklist declarations, releas
 
 ## Inputs
 
-- Normalized review context JSON from `scripts/orchestrate_pd_pr_review.py`
-- Result contract: `../skill-result-schema.json`
+- PR body, linked issue context when present, changed-file list, and current diff
+- Shared lane note format from `../reviewer-rules.md`
 
 ## What To Check
 
@@ -19,4 +19,3 @@ Review only the stable PR contract: linked issue, checklist declarations, releas
 - Only emit `blocking` for objective mismatches that a maintainer can verify from the PR alone.
 - Do not comment on wording style, English quality, or formatting nits.
 - If the PR body is incomplete and the diff is ambiguous, set `status = needs_more_evidence` instead of guessing or inventing a fourth severity.
-- Output one lane-result JSON file, not prose.

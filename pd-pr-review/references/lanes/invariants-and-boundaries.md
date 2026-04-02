@@ -16,7 +16,6 @@ Review current diff behavior, not abstract code style, and explain what invarian
 - Use `blocking` only for concrete boundary or invariant risks.
 - Question wording does not lower severity.
 - Historical questions are calibration only; ground the finding in the current diff.
-- Emit one lane-result JSON file matching `../skill-result-schema.json`.
 
 ## Resources
 

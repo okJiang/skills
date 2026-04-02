@@ -59,3 +59,20 @@ Classify findings by contract impact and evidence:
 - If one root cause creates several local comments, keep one summary plus the minimum inline anchors.
 - Preserve question-shaped wording when it improves collaboration, even for `blocking`.
 
+## Lane Return Shape
+
+Each lane should return one concise note with:
+
+- `Lane`
+- `Status`: `pass`, `findings`, or `needs_more_evidence`
+- `Checks Run`
+- `Findings`: zero or more items with severity, local evidence, and why it matters
+
+If another lane owns the same concern more clearly, hand it off in one sentence instead of duplicating the finding.
+
+## Validation Budget
+
+- Runtime validation is optional and shared across the whole review.
+- Prefer zero commands for docs-only or obviously scoped PRs.
+- When a command is needed, choose the narrowest repo command that resolves one concrete uncertainty.
+- Reuse command results across lanes; do not rerun the same check from multiple lanes.

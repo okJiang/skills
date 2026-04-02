@@ -18,7 +18,6 @@ Reuse `../reviewer-rules.md` so this lane stays on the same question-driven, sev
 - Use `non_blocking` for wording, structure, or genericity improvements when the workflow is otherwise sound.
 - Keep taxonomy, severity, and question-driven wording aligned with the shared rubric; do not invent a second review dialect just because the files are AI-facing.
 - Reuse `/Users/jiangxianjie/.codex/skills/.system/skill-creator/SKILL.md` as the baseline standard.
-- Emit one lane-result JSON file matching `../skill-result-schema.json`.
 
 ## Resources
 

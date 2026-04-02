@@ -15,7 +15,6 @@ Check whether the new behavior can be understood and debugged by operators after
 - Use `blocking` for objective API-doc drift or a real observability gap that can hide production failures.
 - Use `non_blocking` for comment or clarity improvements when the runtime behavior is already observable enough.
 - If the code is self-explanatory and operationally visible, return `pass` instead of inventing docs work.
-- Emit one lane-result JSON file matching `../skill-result-schema.json`.
 
 ## Resources
 

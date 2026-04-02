@@ -1,6 +1,6 @@
 # Root-Cause Lane
 
-Reuse the same evidence bar as `../reviewer-rules.md`, but emit structured JSON instead of prose.
+Reuse the same evidence bar as `../reviewer-rules.md`.
 
 ## Workflow
 
@@ -8,7 +8,7 @@ Reuse the same evidence bar as `../reviewer-rules.md`, but emit structured JSON 
 2. Write down the expected behavior, actual behavior, trigger, and likely root cause.
 3. Independently sketch how you would fix it.
 4. Compare that against the PR diff.
-5. Emit one lane-result JSON file: finding severities stay within `blocking` / `non_blocking` / `question`, while inconclusive reviews use `status = needs_more_evidence`.
+5. Return one lane note: finding severities stay within `blocking` / `non_blocking` / `question`, while inconclusive reviews use `status = needs_more_evidence`.
 
 ## Hard Rules
 

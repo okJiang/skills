@@ -2,7 +2,7 @@
 
 Use this file to map the current PR onto internal review lanes.
 
-This file is the human-readable summary. `scripts/pd_pr_review_framework.py` is the executable source of truth.
+This file is the current lane-routing source of truth for the agent.
 
 ## Core Lanes
 
@@ -51,6 +51,8 @@ This file is the human-readable summary. `scripts/pd_pr_review_framework.py` is 
 
 ## Selection Rules
 
+- Start with `metadata` and `tests`.
+- Add routed lanes from the current diff, PR body, linked issue, and touched paths.
 - Use history only as calibration. The current diff decides the active lanes.
 - Treat `root-cause` as a conditional lane, not a default lane.
 - If a config or rollout PR crosses API plus controller or manager ownership boundaries, add `abstractions-and-naming` alongside `config-and-compat`.
@@ -58,3 +60,4 @@ This file is the human-readable summary. `scripts/pd_pr_review_framework.py` is 
 - If a TSO or MCS change also shifts user-facing defaults or config exposure, add `config-and-compat` alongside `tso-and-mcs`.
 - If an AI-facing change is markdown-only, it can still require `agent-artifacts`; do not suppress it as `docs-only`.
 - If one finding spans multiple lanes, keep it in the lane with the clearest contract surface and mention any crossover in the evidence.
+- If a routed-lane trigger is vague or generic, stay with the core lanes instead of opening speculative lanes.
