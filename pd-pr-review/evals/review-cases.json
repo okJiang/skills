@@ -1,0 +1,70 @@
+{
+  "skill": "pd-pr-review",
+  "required_sections": [
+    "PR Context",
+    "Active Lanes",
+    "Lane Notes",
+    "Consolidated Findings",
+    "Open Questions / Needs More Evidence",
+    "Draft Review Comments"
+  ],
+  "cases": [
+    {
+      "id": "scheduler-regression-bugfix",
+      "prompt": "Review tikv/pd PR #22101. The PR claims to fix a scheduler nil callback regression reported in a linked issue. Verify root-cause coverage, callback ordering risk, and whether the new tests really cover the reported trigger.",
+      "expected_lanes": [
+        "metadata",
+        "tests",
+        "root-cause",
+        "schedule-hotpath",
+        "invariants-and-boundaries"
+      ],
+      "forbidden_lanes": [
+        "tso-and-mcs"
+      ],
+      "must_stop_before_publish": true
+    },
+    {
+      "id": "tso-config-rollout",
+      "prompt": "Review tikv/pd PR #22102. It changes TSO behavior in `pkg/mcs/**`, adjusts a user-facing default, and updates rollback notes. Focus on config compatibility, tests, and whether the PR description matches the actual rollout risk.",
+      "expected_lanes": [
+        "metadata",
+        "tests",
+        "tso-and-mcs",
+        "config-and-compat"
+      ],
+      "forbidden_lanes": [
+        "schedule-hotpath"
+      ],
+      "must_stop_before_publish": true
+    },
+    {
+      "id": "agent-skill-docs-pr",
+      "prompt": "Review tikv/pd PR #22103. The diff mainly updates `.agents/skills/**`, `AGENTS.md`, and review guidance markdown. Check whether the AI-facing materials are accurate, scoped correctly, and still aligned with the documented review workflow.",
+      "expected_lanes": [
+        "metadata",
+        "tests",
+        "agent-artifacts",
+        "observability-and-docs"
+      ],
+      "forbidden_lanes": [
+        "root-cause"
+      ],
+      "must_stop_before_publish": true
+    },
+    {
+      "id": "config-abstraction-refactor",
+      "prompt": "Review tikv/pd PR #22104. It extracts shared config helpers, changes an API-facing default path, and moves logic between controller and manager layers. Verify boundary clarity, compatibility impact, and whether tests prove the behavior instead of only the refactor.",
+      "expected_lanes": [
+        "metadata",
+        "tests",
+        "config-and-compat",
+        "abstractions-and-naming"
+      ],
+      "forbidden_lanes": [
+        "tso-and-mcs"
+      ],
+      "must_stop_before_publish": true
+    }
+  ]
+}

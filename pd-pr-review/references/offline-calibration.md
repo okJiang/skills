@@ -18,5 +18,8 @@ These materials are optional reference only. They are not part of the live revie
 
 - `benchmark-v1.json`
 - `shadow-pr-corpus.jsonl`
+- `evals/description-queries.json`
+- `evals/review-cases.json`
+- `scripts/validate_pd_pr_review.py`
 
 Use them only when you are refining the review skill itself, not when you are reviewing a normal PR.

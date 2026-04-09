@@ -1,0 +1,101 @@
+{
+  "skill": "pd-pr-review",
+  "queries": [
+    {
+      "id": "train-positive-pr-number",
+      "split": "train",
+      "should_trigger": true,
+      "prompt": "帮我 review tikv/pd 的 PR #21543，看它是不是真的修掉 issue 里的 scheduler nil callback bug。"
+    },
+    {
+      "id": "train-positive-pr-url",
+      "split": "train",
+      "should_trigger": true,
+      "prompt": "请审一下 https://github.com/tikv/pd/pull/21544，重点看 root cause、回归风险和测试够不够。"
+    },
+    {
+      "id": "train-positive-regression",
+      "split": "train",
+      "should_trigger": true,
+      "prompt": "这个 PD PR 说修复了 TSO reset regression，帮我做 end-to-end review，并先给本地评论草稿。"
+    },
+    {
+      "id": "train-positive-agent-artifacts",
+      "split": "train",
+      "should_trigger": true,
+      "prompt": "帮我 review 一个 tikv/pd PR，它主要改 `.agents/skills/pd-pr-review` 和 `AGENTS.md`，看 AI-facing 资料有没有问题。"
+    },
+    {
+      "id": "train-negative-fix-ci",
+      "split": "train",
+      "should_trigger": false,
+      "prompt": "tikv/pd 的 PR #21545 CI 红了，帮我修 failing GitHub Actions。"
+    },
+    {
+      "id": "train-negative-cherry-pick",
+      "split": "train",
+      "should_trigger": false,
+      "prompt": "帮我处理 tikv/pd 的 cherry-pick PR，比较原始 PR diff 并修冲突。"
+    },
+    {
+      "id": "train-negative-non-pd-pr",
+      "split": "train",
+      "should_trigger": false,
+      "prompt": "帮我 review openai/openai-python 的 PR #1234。"
+    },
+    {
+      "id": "train-negative-summarize-diff",
+      "split": "train",
+      "should_trigger": false,
+      "prompt": "帮我总结一下 tikv/pd PR #21546 改了什么，不需要做 review 判断。"
+    },
+    {
+      "id": "validation-positive-compat",
+      "split": "validation",
+      "should_trigger": true,
+      "prompt": "Review PD PR #21547，检查 description 和 diff 是否一致，API / config / rollback 风险有没有覆盖。"
+    },
+    {
+      "id": "validation-positive-root-cause",
+      "split": "validation",
+      "should_trigger": true,
+      "prompt": "这个 tikv/pd PR 关联了一个 flaky issue，帮我判断它是不是只是绕过去，还是碰到了 root cause。"
+    },
+    {
+      "id": "validation-positive-tests",
+      "split": "validation",
+      "should_trigger": true,
+      "prompt": "帮我审一个 PD pull request，重点看 tests、根因覆盖、还有能不能形成可发的 review comments。"
+    },
+    {
+      "id": "validation-positive-docs-agent",
+      "split": "validation",
+      "should_trigger": true,
+      "prompt": "tikv/pd 有个 PR 主要改 skill 文档和 review 指南，帮我按 agent-artifacts / docs 角度 review。"
+    },
+    {
+      "id": "validation-negative-generic-review",
+      "split": "validation",
+      "should_trigger": false,
+      "prompt": "帮我评审一个 GitHub PR，仓库不确定，重点看可读性和复杂度。"
+    },
+    {
+      "id": "validation-negative-address-comments",
+      "split": "validation",
+      "should_trigger": false,
+      "prompt": "帮我处理当前 PD PR 上的 review comments 并逐条修改。"
+    },
+    {
+      "id": "validation-negative-fix-my-pr",
+      "split": "validation",
+      "should_trigger": false,
+      "prompt": "帮我修我在 tikv/pd 的 PR，statics 挂了，还跟 base branch 冲突。"
+    },
+    {
+      "id": "validation-negative-office-hours",
+      "split": "validation",
+      "should_trigger": false,
+      "prompt": "我有个想法，想做一个自动 PR reviewer，帮我 brainstorm 一下。"
+    }
+  ]
+}
