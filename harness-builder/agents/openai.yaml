@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Builder"
+  short_description: "Create task-specific Harness Project environments"
+  default_prompt: "Use $harness-builder to design a Harness Project for my task."
